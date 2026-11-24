@@ -14,6 +14,30 @@
 </head>
 <body>
 <section class="hero">
+  <div class="hero-plane" aria-hidden="true">
+    <svg viewBox="0 0 220 160" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="hp-trail" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+          <stop offset="1" stop-color="#ffffff" stop-opacity=".75"/>
+        </linearGradient>
+        <linearGradient id="hp-body" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff"/>
+          <stop offset="1" stop-color="#dfe7ff"/>
+        </linearGradient>
+      </defs>
+      <!-- estela -->
+      <path d="M8 150 C 60 140, 105 118, 138 82" fill="none" stroke="url(#hp-trail)" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9"/>
+      <!-- avión visto desde arriba, apuntando hacia arriba a la derecha -->
+      <g transform="translate(160 56) rotate(45) translate(-60 -60)">
+        <path fill="url(#hp-body)" d="
+          M60 6 C64 6 66 12 66 20 L66 46 L112 70 L112 78 L66 66 L66 94 L78 104 L78 110 L60 105 L42 110 L42 104 L54 94 L54 66 L8 78 L8 70 L54 46 L54 20 C54 12 56 6 60 6 Z"/>
+        <rect x="30" y="62" width="7" height="13" rx="3" fill="#c7d4fb"/>
+        <rect x="83" y="62" width="7" height="13" rx="3" fill="#c7d4fb"/>
+        <path d="M57 14 h6 v6 h-6 z" fill="#9fb6f2" opacity=".8"/>
+      </g>
+    </svg>
+  </div>
   <div class="wrap">
     <h1>Encuentra tu vuelo y <em>reserva en minutos.</em></h1>
     <p class="lead">Compara horarios y tarifas, aparta tus asientos y paga en la agencia. Sin sorpresas: ves impuestos y cargos antes de confirmar.</p>
