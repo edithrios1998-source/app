@@ -1,0 +1,16 @@
+{
+  "name": "vuela-latino",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Venta de boletos de avión: búsqueda de vuelos, reservas y emisión en agencia",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-session": "^2.1.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "pg-mem": "^3.0.4"
+  }
+}

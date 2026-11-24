@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agencia · VuelaLatino</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="wrap pad">
+  <div class="card hidden" id="login" style="max-width:420px;margin:40px auto">
+    <h2>Acceso de la agencia</h2>
+    <form id="login-f">
+      <label for="u">Usuario</label><input id="u" autocomplete="username">
+      <label for="p">Contraseña</label><input id="p" type="password" autocomplete="current-password">
+      <div class="alert error hidden" id="login-err"></div>
+      <button class="block" type="submit" style="margin-top:16px">Entrar</button>
+    </form>
+  </div>
+
+  <div class="hidden" id="panel">
+    <div class="modal-head" style="margin-bottom:6px">
+      <div><b id="who"></b> <span class="muted small-txt" id="role"></span></div>
+      <div style="display:flex;gap:8px"><a class="btn small" href="/">+ Nueva venta</a><button class="secondary small" id="logout">Cerrar sesión</button></div>
+    </div>
+    <div class="tabs">
+      <button class="active" data-tab="bookings">Reservas</button>
+      <button data-tab="routes" class="admin-only">Vuelos y horarios</button>
+      <button data-tab="catalog" class="admin-only">Aerolíneas y aeropuertos</button>
+      <button data-tab="settings" class="admin-only">Precios y plazos</button>
+      <button data-tab="users" class="admin-only">Usuarios</button>
+    </div>
+
+    <section data-pane="bookings">
+      <div class="stats" id="stats"></div>
+      <div class="toolbar">
+        <input id="q" placeholder="Buscar código, pasajero, correo o documento">
+        <select id="fs"><option value="">Todos los estados</option></select>
+        <button class="secondary" id="reload">Actualizar</button>
+      </div>
+      <div class="card table-wrap" style="padding:0">
+        <table><thead><tr><th>Código</th><th>Creada</th><th>Contacto</th><th>Vuelos</th><th>Pax</th><th>Total</th><th>Estado</th></tr></thead><tbody id="rows"></tbody></table>
+      </div>
+    </section>
+
+    <section data-pane="routes" class="hidden">
+      <div class="card">
+        <div class="modal-head" style="flex-wrap:wrap"><div><h2>Vuelos y horarios</h2><p class="muted small-txt" style="margin:0">Cada ruta se repite los días marcados. La hora de llegada se calcula con la duración y la zona horaria de cada aeropuerto.</p></div>
+          <button id="route-new">+ Agregar vuelo</button></div>
+        <div class="toolbar" style="margin-top:14px"><input id="rq" placeholder="Filtrar por vuelo, origen o destino"></div>
+        <div class="table-wrap"><table><thead><tr><th>Vuelo</th><th>Ruta</th><th>Salida</th><th>Duración</th><th>Días</th><th>Asientos</th><th>Precio base</th><th>Estado</th></tr></thead><tbody id="routes"></tbody></table></div>
+        <div class="alert hidden" id="routes-msg"></div>
+      </div>
+    </section>
+
+    <section data-pane="catalog" class="hidden">
+      <div class="alert warn" id="demo-note"></div>
+      <div class="card">
+        <div class="modal-head"><h2>Aerolíneas</h2></div>
+        <div class="table-wrap"><table><thead><tr><th>Aerolínea</th><th>Código</th><th>Color</th><th>Estado</th><th></th></tr></thead><tbody id="airlines"></tbody></table></div>
+        <form id="al-f" class="row4" style="align-items:end;margin-top:8px">
+          <div><label for="al-code">Código</label><input id="al-code" maxlength="3" placeholder="AM"></div>
+          <div><label for="al-name">Nombre</label><input id="al-name"></div>
+          <div><label for="al-color">Color</label><input id="al-color" type="color" value="#1747b8" style="height:44px;padding:4px"></div>
+          <div><button class="block" type="submit">Agregar aerolínea</button></div>
+        </form>
+        <div class="alert hidden" id="al-msg"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Aeropuertos</h2>
+        <p class="muted small-txt" style="margin:0">La diferencia con UTC se usa para calcular la hora local de llegada. Ajústala cuando cambie el horario de verano.</p>
+        <div class="table-wrap"><table><thead><tr><th>Código</th><th>Ciudad / aeropuerto</th><th>País</th><th>UTC</th><th>Estado</th><th></th></tr></thead><tbody id="airports"></tbody></table></div>
+        <form id="ap-f" class="row4" style="align-items:end;margin-top:8px">
+          <div><label for="ap-code">IATA</label><input id="ap-code" maxlength="3" placeholder="SCL"></div>
+          <div><label for="ap-city">Ciudad</label><input id="ap-city"></div>
+          <div><label for="ap-country">País</label><input id="ap-country"></div>
+          <div><label for="ap-off">UTC</label><input id="ap-off" type="number" step="0.5" value="-5"></div>
+          <div style="grid-column:1/-2"><label for="ap-name">Nombre del aeropuerto</label><input id="ap-name"></div>
+          <div><button class="block" type="submit">Agregar</button></div>
+        </form>
+        <div class="alert hidden" id="ap-msg"></div>
+      </div>
+    </section>
+
+    <section data-pane="settings" class="hidden">
+      <div class="card" style="max-width:640px">
+        <h2>Precios y plazos</h2>
+        <form id="set-f">
+          <div class="row3">
+            <div><label for="s-tax">Impuestos (%)</label><input id="s-tax" type="number" step="0.1" min="0" max="100"></div>
+            <div><label for="s-fee">Cargo por servicio (USD por pasajero)</label><input id="s-fee" type="number" step="0.01" min="0"></div>
+            <div><label for="s-hold">Plazo para pagar (horas)</label><input id="s-hold" type="number" min="1" max="168"></div>
+          </div>
+          <p class="hint">Tarifas: Básica = precio base · Clásica = ×1.30 · Flexible = ×1.75. Compras con menos de 21 días: +10 %; menos de 7 días: +25 %.</p>
+          <div class="alert hidden" id="set-msg"></div>
+          <button type="submit" style="margin-top:12px">Guardar</button>
+        </form>
+      </div>
+    </section>
+
+    <section data-pane="users" class="hidden">
+      <div class="card table-wrap"><h2>Usuarios</h2>
+        <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody id="users"></tbody></table></div>
+      <div class="card" style="margin-top:16px;max-width:640px"><h2>Agregar usuario</h2>
+        <form id="user-f">
+          <div class="row"><div><label for="nu">Usuario</label><input id="nu"></div><div><label for="nn">Nombre</label><input id="nn"></div></div>
+          <div class="row"><div><label for="nr">Rol</label><select id="nr"><option value="agent">Agente de ventas</option><option value="admin">Administrador</option></select></div>
+            <div><label for="np">Contraseña (mín. 8)</label><input id="np" type="password" autocomplete="new-password"></div></div>
+          <div class="alert hidden" id="user-msg"></div>
+          <button class="block" type="submit" style="margin-top:14px">Crear usuario</button>
+        </form>
+      </div>
+    </section>
+  </div>
+</main>
+<div class="modal-bg hidden" id="modal"><div class="modal" id="mb"></div></div>
+
+<script src="/common.js"></script>
+<script>
+renderHeader('/personal');
+let me = null, cfg = null, cat = null;
+const DAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+const daysTxt = (d) => d.length === 7 ? 'Diario' : [...d].map((x) => DAYS[x - 1]).join(' ');
+const closeModal = () => $('#modal').classList.add('hidden');
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+
+async function boot() {
+  cfg = await api('/api/config');
+  me = (await api('/api/auth/me')).user;
+  $('#login').classList.toggle('hidden', !!me); $('#panel').classList.toggle('hidden', !me);
+  if (!me) return;
+  $('#who').textContent = me.name; $('#role').textContent = me.role === 'admin' ? '· Administrador' : '· Agente de ventas';
+  $$('.admin-only').forEach((el) => el.classList.toggle('hidden', me.role !== 'admin'));
+  $('#fs').innerHTML = '<option value="">Todos los estados</option>' + Object.entries(cfg.statuses).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  loadBookings();
+}
+$('#login-f').addEventListener('submit', async (e) => {
+  e.preventDefault(); hideMsg($('#login-err'));
+  try { await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } }); $('#p').value = ''; boot(); }
+  catch (ex) { showMsg($('#login-err'), ex.message); }
+});
+$('#logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }); location.reload(); });
+$$('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  $$('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
+  $$('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== b.dataset.tab));
+  ({ bookings: loadBookings, routes: loadRoutes, catalog: loadCatalog, settings: loadSettings, users: loadUsers })[b.dataset.tab]();
+}));
+
+// ----- reservas -----
+let qT; $('#q').addEventListener('input', () => { clearTimeout(qT); qT = setTimeout(loadBookings, 300); });
+$('#fs').addEventListener('change', loadBookings); $('#reload').addEventListener('click', loadBookings);
+async function loadBookings() {
+  const [rows, stats] = await Promise.all([api('/api/staff/bookings?' + new URLSearchParams({ q: $('#q').value, status: $('#fs').value })), api('/api/staff/stats')]);
+  const order = Object.keys(cfg.statuses);
+  stats.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  $('#stats').innerHTML = stats.length ? stats.map((s) => `<div class="stat"><div class="muted small-txt">${esc(s.label)}</div><div class="n">${s.n}</div><div class="muted small-txt">${s.pax} pax · ${usd(s.total)}</div></div>`).join('') : '<div class="muted">Aún no hay reservas.</div>';
+  $('#rows').innerHTML = rows.length ? rows.map((b) => `<tr class="click" data-id="${b.id}">
+    <td><b style="letter-spacing:1px">${esc(b.code)}</b><div class="muted small-txt">${b.origin === 'web' ? 'En línea' : 'Agencia'}</div></td>
+    <td class="small-txt">${dt(b.created_at)}</td><td>${esc(b.contact_name)}</td>
+    <td class="small-txt">${b.segments.map((s) => `<b>${esc(s.route)}</b> ${esc(s.flight)} · ${esc(dDate(s.date))}`).join('<br>')}</td>
+    <td>${b.pax_count}</td><td>${usd(b.total)}</td>
+    <td><span class="badge b-${esc(b.status)}">${esc(b.status_label)}</span>${b.status === 'pendiente_pago' ? `<div class="muted small-txt">vence ${dt(b.expires_at)}</div>` : ''}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Sin resultados.</td></tr>';
+  $$('#rows tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openBooking(tr.dataset.id)));
+}
+async function openBooking(id) {
+  const b = await api('/api/staff/bookings/' + id);
+  const canCancel = b.status === 'pendiente_pago' || (b.status === 'emitido' && me.role === 'admin');
+  $('#mb').innerHTML = `<div class="modal-head no-print" style="margin-bottom:12px"><h2 style="margin:0">Reserva ${esc(b.code)}</h2><button class="secondary small" id="mclose">Cerrar</button></div>
+    ${bookingHtml(b, { staff: true })}
+    <div class="card no-print" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((e) => `<li><b>${esc(e.label)}</b>${e.note ? ' — ' + esc(e.note) : ''}<br><span class="muted small-txt">${dt(e.at)}${e.user_name ? ' · ' + esc(e.user_name) : ''}</span></li>`).join('')}</ul></div>
+    <div class="card no-print" style="margin-top:14px">
+      ${b.status === 'pendiente_pago' ? `<h2>Cobrar y emitir boletos</h2>
+        <p class="muted small-txt" style="margin:0">Cobra <b>${usd(b.total)} USD</b> y verifica que los nombres coincidan con los documentos.</p>
+        <div class="row"><div><label for="pm">Forma de pago</label><select id="pm"><option>Efectivo</option><option>Tarjeta en terminal</option><option>Transferencia</option></select></div>
+          <div><label for="pn">Nota (opcional)</label><input id="pn" placeholder="Ej. folio de terminal"></div></div>
+        <button class="accent block" id="issue" style="margin-top:14px">Confirmar pago y emitir ${b.pax_count} boleto${b.pax_count > 1 ? 's' : ''}</button>` : ''}
+      <div class="alert error hidden" id="merr"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="secondary" onclick="window.print()">Imprimir</button>
+        ${canCancel ? '<button class="danger" id="cancel">Cancelar reserva</button>' : ''}
+      </div>
+    </div>`;
+  $('#modal').classList.remove('hidden'); $('#mclose').onclick = closeModal;
+  if ($('#issue')) $('#issue').onclick = async () => {
+    try { await api(`/api/staff/bookings/${b.id}/issue`, { method: 'POST', body: { payment_method: $('#pm').value, note: $('#pn').value } }); loadBookings(); openBooking(b.id); }
+    catch (e) { showMsg($('#merr'), e.message); }
+  };
+  if ($('#cancel')) $('#cancel').onclick = async () => {
+    if (!confirm(`¿Cancelar la reserva ${b.code}? Los asientos se liberan y no se puede deshacer.`)) return;
+    try { await api(`/api/staff/bookings/${b.id}/cancel`, { method: 'POST', body: {} }); loadBookings(); openBooking(b.id); }
+    catch (e) { showMsg($('#merr'), e.message); }
+  };
+}
+
+// ----- catálogo (admin) -----
+async function getCat() { cat = await api('/api/admin/catalog'); return cat; }
+async function loadRoutes() {
+  await getCat();
+  if (!$('#rq').dataset.bound) { $('#rq').addEventListener('input', drawRoutes); $('#route-new').addEventListener('click', () => editRoute(null)); $('#rq').dataset.bound = 1; }
+  drawRoutes();
+}
+function drawRoutes() {
+  const q = $('#rq').value.toLowerCase();
+  const al = Object.fromEntries(cat.airlines.map((a) => [a.code, a]));
+  const list = cat.routes.filter((r) => !q || `${r.airline}${r.flight_no} ${r.airline} ${r.flight_no} ${r.origin} ${r.destination}`.toLowerCase().includes(q));
+  $('#routes').innerHTML = list.map((r) => `<tr class="click" data-id="${r.id}">
+    <td><div class="airline">${alLogo(al[r.airline] || { code: r.airline, color: '#666' })}<b>${esc(r.airline)} ${esc(r.flight_no)}</b></div></td>
+    <td><b>${esc(r.origin)} → ${esc(r.destination)}</b></td><td>${esc(r.dep_time)}</td><td>${dur(r.duration_min)}</td>
+    <td class="small-txt">${daysTxt(r.days)}</td><td>${r.seats}</td><td>${usd(r.base_price)}</td>
+    <td>${r.active ? '<span class="badge b-emitido">Activo</span>' : '<span class="badge b-vencido">Inactivo</span>'}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Sin vuelos.</td></tr>';
+  $$('#routes tr[data-id]').forEach((tr) => tr.addEventListener('click', () => editRoute(cat.routes.find((r) => String(r.id) === tr.dataset.id))));
+}
+function editRoute(r) {
+  const isNew = !r;
+  r = r || { airline: cat.airlines[0]?.code, flight_no: '', origin: 'MEX', destination: 'CUN', dep_time: '08:00', duration_min: 120, days: '1234567', seats: 150, base_price: 99, active: true };
+  const apOpts = (sel) => cat.airports.map((a) => `<option value="${a.code}" ${a.code === sel ? 'selected' : ''}>${a.code} · ${esc(a.city)}</option>`).join('');
+  $('#mb').innerHTML = `<div class="modal-head"><h2 style="margin:0">${isNew ? 'Agregar vuelo' : 'Editar ' + esc(r.airline + ' ' + r.flight_no)}</h2><button class="secondary small" id="mclose">Cerrar</button></div>
+    <form id="rf">
+      <div class="row4">
+        <div><label>Aerolínea</label><select id="r-al">${cat.airlines.map((a) => `<option value="${a.code}" ${a.code === r.airline ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+        <div><label>Número de vuelo</label><input id="r-no" value="${esc(r.flight_no)}" placeholder="123"></div>
+        <div><label>Origen</label><select id="r-o">${apOpts(r.origin)}</select></div>
+        <div><label>Destino</label><select id="r-d">${apOpts(r.destination)}</select></div>
+      </div>
+      <div class="row4">
+        <div><label>Salida (hora local)</label><input id="r-t" type="time" value="${esc(r.dep_time)}"></div>
+        <div><label>Duración (min)</label><input id="r-du" type="number" min="20" value="${r.duration_min}"></div>
+        <div><label>Asientos</label><input id="r-s" type="number" min="1" value="${r.seats}"></div>
+        <div><label>Precio base (USD)</label><input id="r-p" type="number" step="0.01" min="1" value="${r.base_price}"></div>
+      </div>
+      <label>Días de operación</label>
+      <div class="days">${DAYS.map((d, i) => `<label><input type="checkbox" value="${i + 1}" ${r.days.includes(String(i + 1)) ? 'checked' : ''}> ${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'][i]}</label>`).join('')}</div>
+      <p class="hint" id="r-arr"></p>
+      <label class="check"><input type="checkbox" id="r-act" ${r.active ? 'checked' : ''}> <span>Activo (se puede vender)</span></label>
+      <div class="alert error hidden" id="rerr"></div>
+      <button class="block" type="submit" style="margin-top:14px">${isNew ? 'Agregar vuelo' : 'Guardar cambios'}</button>
+    </form>`;
+  $('#modal').classList.remove('hidden'); $('#mclose').onclick = closeModal;
+  const calc = () => {
+    const A = cat.airports.find((a) => a.code === $('#r-o').value), B = cat.airports.find((a) => a.code === $('#r-d').value);
+    const [h, m] = ($('#r-t').value || '00:00').split(':').map(Number);
+    const local = h * 60 + m - A.utc_offset * 60 + Number($('#r-du').value || 0) + B.utc_offset * 60;
+    const mins = ((local % 1440) + 1440) % 1440, off = Math.floor(local / 1440);
+    $('#r-arr').textContent = `Llega a ${B.city} a las ${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')} hora local${off > 0 ? ' (día siguiente)' : off < 0 ? ' (día anterior)' : ''}.`;
+  };
+  ['#r-o', '#r-d', '#r-t', '#r-du'].forEach((s) => $(s).addEventListener('input', calc)); calc();
+  $('#rf').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { airline: $('#r-al').value, flight_no: $('#r-no').value, origin: $('#r-o').value, destination: $('#r-d').value, dep_time: $('#r-t').value,
+      duration_min: $('#r-du').value, seats: $('#r-s').value, base_price: $('#r-p').value, active: $('#r-act').checked,
+      days: $$('.days input:checked').map((i) => i.value).join('') };
+    try { await api(isNew ? '/api/admin/routes' : '/api/admin/routes/' + r.id, { method: isNew ? 'POST' : 'PUT', body }); closeModal(); showMsg($('#routes-msg'), 'Guardado.', 'ok'); loadRoutes(); }
+    catch (ex) { showMsg($('#rerr'), ex.message); }
+  });
+}
+async function loadCatalog() {
+  await getCat();
+  $('#demo-note').innerHTML = icon('info', 'ico-sm') + '<span>Las aerolíneas "Aerolínea Ejemplo" y "Vuelos Demo" y sus horarios son datos de prueba. Agrega las aerolíneas reales con las que vendes y desactiva las de ejemplo.</span>';
+  $('#airlines').innerHTML = cat.airlines.map((a) => `<tr data-code="${a.code}"><td><div class="airline">${alLogo(a)}<b>${esc(a.name)}</b></div></td><td>${esc(a.code)}</td>
+    <td><input type="color" value="${esc(a.color)}" data-k="color" style="width:52px;height:34px;padding:2px"></td>
+    <td>${a.active ? '<span class="badge b-emitido">Activa</span>' : '<span class="badge b-vencido">Inactiva</span>'}</td>
+    <td style="white-space:nowrap"><button class="secondary small" data-act="toggle">${a.active ? 'Desactivar' : 'Activar'}</button></td></tr>`).join('');
+  $$('#airlines tr').forEach((tr) => {
+    const a = cat.airlines.find((x) => x.code === tr.dataset.code);
+    $('[data-act=toggle]', tr).onclick = async () => { await api('/api/admin/airlines/' + a.code, { method: 'PUT', body: { active: !a.active } }); loadCatalog(); };
+    $('[data-k=color]', tr).onchange = async (e) => { await api('/api/admin/airlines/' + a.code, { method: 'PUT', body: { color: e.target.value } }); loadCatalog(); };
+  });
+  $('#airports').innerHTML = cat.airports.map((a) => `<tr data-code="${a.code}"><td><b>${esc(a.code)}</b></td><td>${esc(a.city)}<div class="muted small-txt">${esc(a.name)}</div></td><td>${esc(a.country)}</td>
+    <td><input type="number" step="0.5" value="${a.utc_offset}" style="width:80px" data-k="off"></td>
+    <td>${a.active ? '<span class="badge b-emitido">Activo</span>' : '<span class="badge b-vencido">Inactivo</span>'}</td>
+    <td><button class="secondary small" data-act="toggle">${a.active ? 'Desactivar' : 'Activar'}</button></td></tr>`).join('');
+  $$('#airports tr').forEach((tr) => {
+    const a = cat.airports.find((x) => x.code === tr.dataset.code);
+    $('[data-act=toggle]', tr).onclick = async () => { await api('/api/admin/airports/' + a.code, { method: 'PUT', body: { active: !a.active } }); loadCatalog(); };
+    $('[data-k=off]', tr).onchange = async (e) => {
+      try { await api('/api/admin/airports/' + a.code, { method: 'PUT', body: { utc_offset: Number(e.target.value) } }); showMsg($('#ap-msg'), 'Zona horaria de ' + a.code + ' actualizada.', 'ok'); }
+      catch (ex) { showMsg($('#ap-msg'), ex.message); }
+    };
+  });
+}
+$('#al-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try { await api('/api/admin/airlines', { method: 'POST', body: { code: $('#al-code').value, name: $('#al-name').value, color: $('#al-color').value } }); e.target.reset(); showMsg($('#al-msg'), 'Aerolínea agregada.', 'ok'); loadCatalog(); }
+  catch (ex) { showMsg($('#al-msg'), ex.message); }
+});
+$('#ap-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try { await api('/api/admin/airports', { method: 'POST', body: { code: $('#ap-code').value, city: $('#ap-city').value, country: $('#ap-country').value, name: $('#ap-name').value, utc_offset: $('#ap-off').value } }); e.target.reset(); showMsg($('#ap-msg'), 'Aeropuerto agregado.', 'ok'); loadCatalog(); }
+  catch (ex) { showMsg($('#ap-msg'), ex.message); }
+});
+
+async function loadSettings() {
+  const s = (await getCat()).settings;
+  $('#s-tax').value = Math.round(s.tax_rate * 1000) / 10; $('#s-fee').value = s.service_fee; $('#s-hold').value = s.hold_hours;
+}
+$('#set-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try { await api('/api/admin/settings', { method: 'PUT', body: { tax_rate: Number($('#s-tax').value) / 100, service_fee: Number($('#s-fee').value), hold_hours: Number($('#s-hold').value) } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
+  catch (ex) { showMsg($('#set-msg'), ex.message); }
+});
+
+// ----- usuarios -----
+async function loadUsers() {
+  const list = await api('/api/admin/users');
+  $('#users').innerHTML = list.map((u) => `<tr data-id="${u.id}"><td><b>${esc(u.username)}</b></td><td>${esc(u.name)}</td><td>${u.role === 'admin' ? 'Administrador' : 'Agente'}</td>
+    <td>${u.active ? '<span class="badge b-emitido">Activo</span>' : '<span class="badge b-cancelado">Inactivo</span>'}</td>
+    <td style="white-space:nowrap"><button class="secondary small" data-act="pw">Cambiar contraseña</button> ${u.id !== me.id ? `<button class="secondary small" data-act="toggle">${u.active ? 'Desactivar' : 'Activar'}</button>` : ''}</td></tr>`).join('');
+  $$('#users tr').forEach((tr) => {
+    const u = list.find((x) => String(x.id) === tr.dataset.id);
+    $$('button', tr).forEach((b) => b.onclick = async () => {
+      try {
+        if (b.dataset.act === 'pw') { const pw = prompt('Nueva contraseña para ' + u.username + ' (mínimo 8):'); if (!pw) return; await api('/api/admin/users/' + u.id, { method: 'PUT', body: { password: pw } }); alert('Contraseña actualizada.'); }
+        else { await api('/api/admin/users/' + u.id, { method: 'PUT', body: { active: !u.active } }); loadUsers(); }
+      } catch (e) { alert(e.message); }
+    });
+  });
+}
+$('#user-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try { await api('/api/admin/users', { method: 'POST', body: { username: $('#nu').value, name: $('#nn').value, role: $('#nr').value, password: $('#np').value } }); e.target.reset(); showMsg($('#user-msg'), 'Usuario creado.', 'ok'); loadUsers(); }
+  catch (ex) { showMsg($('#user-msg'), ex.message); }
+});
+
+boot().catch((e) => alert(e.message));
+</script>
+</body>
+</html>

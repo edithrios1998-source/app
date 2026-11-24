@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mi reserva · VuelaLatino</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="wrap pad" style="max-width:880px">
+  <div class="card no-print" id="find">
+    <h2>Consulta tu reserva</h2>
+    <p class="muted small-txt" style="margin:0">Escribe el código de 6 caracteres y el apellido de cualquier pasajero.</p>
+    <form id="f" class="row" style="align-items:end" novalidate>
+      <div><label for="code">Código de reserva</label><input id="code" maxlength="6" placeholder="Ej. K9MG5S" style="text-transform:uppercase;letter-spacing:2px;font-weight:700" autocomplete="off"></div>
+      <div><label for="last">Apellido</label><input id="last" autocomplete="family-name"></div>
+      <div style="grid-column:1/-1"><div class="alert error hidden" id="err"></div><button class="block" type="submit" style="margin-top:12px">Buscar reserva</button></div>
+    </form>
+  </div>
+  <div id="res" style="margin-top:18px"></div>
+</main>
+<footer><div class="wrap"><span>¿Necesitas cambiar o cancelar? Acude a la agencia con tu código de reserva.</span><span><a href="/">Buscar vuelos</a></span></div></footer>
+<script src="/common.js"></script>
+<script>
+renderHeader('/reserva');
+const qs = new URLSearchParams(location.search);
+if (qs.get('code')) $('#code').value = qs.get('code');
+$('#f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideMsg($('#err')); $('#res').innerHTML = '';
+  try {
+    const b = await api('/api/bookings/lookup', { method: 'POST', body: { code: $('#code').value.trim(), last_name: $('#last').value } });
+    $('#res').innerHTML = bookingHtml(b) + `
+      <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b><br><span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
+      <div class="row no-print" style="margin-top:16px;max-width:420px"><button class="secondary" onclick="window.print()">Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button><a class="btn" href="/">Buscar otro vuelo</a></div>`;
+  } catch (ex) { showMsg($('#err'), ex.message); }
+});
+</script>
+</body>
+</html>
