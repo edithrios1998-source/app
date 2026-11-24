@@ -14,9 +14,9 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 // Tarifas: multiplicador sobre el precio base y lo que incluyen.
 const FARES = {
-  basica: { name: 'Básica', mult: 1, includes: ['1 artículo personal (bolso o mochila bajo el asiento)', 'Asiento asignado al documentar'], excludes: ['Maleta de mano', 'Maleta documentada', 'Cambios'] },
-  clasica: { name: 'Clásica', mult: 1.3, includes: ['Artículo personal + maleta de mano 10 kg', '1 maleta documentada de 23 kg', 'Elección de asiento estándar', 'Cambios con cargo'], excludes: ['Reembolso'] },
-  flexible: { name: 'Flexible', mult: 1.75, includes: ['Artículo personal + maleta de mano 10 kg', '2 maletas documentadas de 23 kg', 'Cambios sin cargo', 'Reembolso con cargo', 'Abordaje prioritario'], excludes: [] },
+  basica: { name: 'Básica', mult: 1, includes: ['1 artículo personal (bolso o mochila bajo el asiento)', 'Asiento asignado al documentar (o elígelo con costo)'], excludes: ['Maleta de mano', 'Maleta documentada', 'Cambios'] },
+  clasica: { name: 'Clásica', mult: 1.3, includes: ['Artículo personal + maleta de mano 10 kg', '1 maleta documentada de 23 kg', 'Asiento estándar sin costo', 'Cambios con cargo'], excludes: ['Reembolso'] },
+  flexible: { name: 'Flexible', mult: 1.75, includes: ['Artículo personal + maleta de mano 10 kg', '2 maletas documentadas de 23 kg', 'Cualquier asiento sin costo', 'Cambios sin cargo', 'Reembolso con cargo', 'Abordaje prioritario'], excludes: [] },
 };
 const STATUS = {
   pendiente_pago: 'Pendiente de pago',
@@ -59,7 +59,8 @@ const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).
 async function getSettings() {
   const { rows } = await query('SELECT key, value FROM settings');
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee) };
+  return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee),
+    seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20) };
 }
 
 async function airportMap() {
@@ -126,20 +127,23 @@ async function loadBooking(where, params) {
   const { rows } = await query(`SELECT * FROM bookings WHERE ${where}`, params);
   const b = rows[0];
   if (!b) return null;
-  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al, { rows: cr }] = await Promise.all([
+  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al, { rows: cr }, { rows: st }] = await Promise.all([
     query('SELECT * FROM segments WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM passengers WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM booking_events WHERE booking_id = $1 ORDER BY id', [b.id]),
     airportMap(), airlineMap(),
     query('SELECT * FROM correction_requests WHERE booking_id = $1 ORDER BY id', [b.id]),
+    query('SELECT * FROM seat_assignments WHERE booking_id = $1', [b.id]),
   ]);
   return {
     id: b.id, code: b.code, status: b.status, status_label: STATUS[b.status],
     contact_name: b.contact_name, contact_email: b.contact_email, contact_phone: b.contact_phone,
-    pax_count: b.pax_count, subtotal: Number(b.subtotal), taxes: Number(b.taxes), total: Number(b.total),
+    pax_count: b.pax_count, subtotal: Number(b.subtotal), taxes: Number(b.taxes), total: Number(b.total), seats_total: Number(b.seats_total || 0),
     origin: b.origin, expires_at: b.expires_at, created_at: b.created_at, updated_at: b.updated_at,
     payment_method: b.payment_method, payment_ref: b.payment_ref, paid_at: b.paid_at,
     segments: segs.map((s) => ({
+      id: s.id, route_id: s.route_id,
+      seats: pax.map((p) => { const a = st.find((x) => x.segment_id === s.id && x.passenger_id === p.id); return a ? { seat: a.seat, type: a.seat_type, price: Number(a.price) } : null; }),
       airline: { code: s.airline, name: al[s.airline]?.name || s.airline, color: al[s.airline]?.color || '#333' },
       flight_no: s.airline + ' ' + s.flight_no, date: s.flight_date, origin: s.origin, destination: s.destination,
       origin_city: ap[s.origin]?.city, destination_city: ap[s.destination]?.city,
@@ -262,6 +266,82 @@ function readPassengers(list, international) {
   });
 }
 
+// ---------- asientos ----------
+const SEAT_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+const SEAT_TYPES = { front: 'Preferente', exit: 'Salida de emergencia (más espacio)', std: 'Estándar' };
+// Filas 1-3 preferentes; dos filas de salida de emergencia a ~40 % del avión.
+function seatLayout(totalSeats) {
+  const rows = Math.ceil(totalSeats / 6);
+  const exitA = Math.max(5, Math.round(rows * 0.4));
+  const out = [];
+  let n = 0;
+  for (let r = 1; r <= rows; r++) {
+    const type = r <= 3 ? 'front' : (r === exitA || r === exitA + 1) && rows > 8 ? 'exit' : 'std';
+    for (const l of SEAT_LETTERS) { if (n++ < totalSeats) out.push({ seat: r + l, row: r, letter: l, type }); }
+  }
+  return { rows, seats: out };
+}
+function seatPrice(type, fare, st) {
+  if (fare === 'flexible') return 0;
+  if (fare === 'clasica' && type === 'std') return 0;
+  return money(type === 'front' ? st.seat_front : type === 'exit' ? st.seat_exit : st.seat_std);
+}
+async function takenSeats(routeId, date, excludeBookingId = 0) {
+  const { rows } = await query(
+    `SELECT sa.seat FROM seat_assignments sa JOIN segments s ON s.id = sa.segment_id JOIN bookings b ON b.id = sa.booking_id
+     WHERE s.route_id = $1 AND s.flight_date = $2 AND b.id <> $3
+       AND (b.status IN ('emitido', 'pago_revision') OR (b.status = 'pendiente_pago' AND b.expires_at > NOW()))`, [routeId, date, excludeBookingId]);
+  return new Set(rows.map((r) => r.seat));
+}
+// Valida los asientos pedidos para un tramo: lista por pasajero (null = sin elegir).
+async function checkSeats(route, date, fare, wanted, paxCount, settings, excludeBookingId = 0) {
+  const list = Array.isArray(wanted) ? wanted.slice(0, paxCount) : [];
+  const layout = new Map(seatLayout(route.seats).seats.map((x) => [x.seat, x]));
+  const taken = await takenSeats(route.id, date, excludeBookingId);
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < paxCount; i++) {
+    const code = list[i] ? String(list[i]).toUpperCase().trim() : '';
+    if (!code) { out.push(null); continue; }
+    const info = layout.get(code);
+    if (!info) throw new HttpError(400, `El asiento ${code} no existe en este avión.`);
+    if (seen.has(code)) throw new HttpError(400, `El asiento ${code} está repetido.`);
+    if (taken.has(code)) throw new HttpError(409, `El asiento ${code} acaba de ocuparse. Elige otro.`);
+    seen.add(code);
+    out.push({ seat: code, type: info.type, price: seatPrice(info.type, fare, settings) });
+  }
+  return out;
+}
+async function saveSeats(bookingId, segmentId, passengerIds, seats) {
+  await query('DELETE FROM seat_assignments WHERE segment_id = $1', [segmentId]);
+  for (let i = 0; i < passengerIds.length; i++) {
+    const x = seats[i];
+    if (x) await query('INSERT INTO seat_assignments (booking_id, segment_id, passenger_id, seat, seat_type, price) VALUES ($1,$2,$3,$4,$5,$6)',
+      [bookingId, segmentId, passengerIds[i], x.seat, x.type, x.price]);
+  }
+}
+async function recalcSeatsTotal(bookingId) {
+  const { rows } = await query('SELECT COALESCE(SUM(price),0) AS t FROM seat_assignments WHERE booking_id = $1', [bookingId]);
+  const t = money(rows[0].t);
+  await query('UPDATE bookings SET seats_total = $1, total = subtotal + taxes + $1, updated_at = NOW() WHERE id = $2', [t, bookingId]);
+  return t;
+}
+
+app.get('/api/seatmap', wrap(async (req, res) => {
+  await expireOld();
+  const { rows } = await query('SELECT * FROM routes WHERE id = $1', [Number(req.query.route_id) || 0]);
+  const r = rows[0];
+  const date = str(req.query.date, 10);
+  if (!r || !isDate(date)) throw new HttpError(404, 'Vuelo no encontrado.');
+  const fare = FARES[req.query.fare] ? req.query.fare : 'basica';
+  const st = await getSettings();
+  const taken = await takenSeats(r.id, date);
+  const { rows: nRows, seats } = seatLayout(r.seats);
+  res.json({ rows: nRows, letters: SEAT_LETTERS, types: SEAT_TYPES,
+    prices: Object.fromEntries(Object.keys(SEAT_TYPES).map((t) => [t, seatPrice(t, fare, st)])),
+    seats: seats.map((x) => ({ ...x, taken: taken.has(x.seat), price: seatPrice(x.type, fare, st) })) });
+}));
+
 app.post('/api/bookings', wrap(async (req, res) => {
   await expireOld();
   const segIn = Array.isArray(req.body.segments) ? req.body.segments.slice(0, 2) : [];
@@ -274,7 +354,7 @@ app.post('/api/bookings', wrap(async (req, res) => {
     if (!r || !al[r.airline]?.active) throw new HttpError(400, 'Uno de los vuelos ya no está disponible.');
     if (!isDate(s.date) || s.date < todayStr() || !r.days.includes(String(weekday(s.date)))) throw new HttpError(400, `El vuelo ${r.airline} ${r.flight_no} no opera ese día.`);
     if (!FARES[s.fare]) throw new HttpError(400, 'Tarifa inválida.');
-    segs.push({ r, date: s.date, fare: s.fare });
+    segs.push({ r, date: s.date, fare: s.fare, wantSeats: s.seats });
   }
   if (segs.length === 2) {
     const [a, b] = segs;
@@ -296,26 +376,34 @@ app.post('/api/bookings', wrap(async (req, res) => {
   const priced = segs.map((s) => ({ ...s, price: farePrice(s.r.base_price, s.fare, s.date), ...arrival(s.r.dep_time, s.r.duration_min, ap[s.r.origin], ap[s.r.destination]) }));
   const subtotal = money(priced.reduce((t, s) => t + s.price, 0) * pax.length);
   const taxes = money(subtotal * settings.tax_rate + settings.service_fee * pax.length);
-  const total = money(subtotal + taxes);
+  for (const s of segs) s.seatSel = await checkSeats(s.r, s.date, s.fare, s.wantSeats, pax.length, settings);
+  const seatsTotal = money(segs.reduce((t, s) => t + s.seatSel.reduce((a, x) => a + (x ? x.price : 0), 0), 0));
+  const total = money(subtotal + taxes + seatsTotal);
   const code = await newCode();
   const staff = req.session.user;
   const expires = new Date(Date.now() + settings.hold_hours * 3600 * 1000);
   const { rows } = await query(
-    `INSERT INTO bookings (code, status, contact_name, contact_email, contact_phone, pax_count, subtotal, taxes, total, origin, created_by, expires_at)
-     VALUES ($1,'pendiente_pago',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-    [code, contact.name, contact.email, contact.phone, pax.length, subtotal, taxes, total, staff ? 'agencia' : 'web', staff ? staff.id : null, expires]);
+    `INSERT INTO bookings (code, status, contact_name, contact_email, contact_phone, pax_count, subtotal, taxes, total, origin, created_by, expires_at, seats_total)
+     VALUES ($1,'pendiente_pago',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+    [code, contact.name, contact.email, contact.phone, pax.length, subtotal, taxes, total, staff ? 'agencia' : 'web', staff ? staff.id : null, expires, seatsTotal]);
   const id = rows[0].id;
+  const segIds = [];
   for (const s of priced) {
-    await query(`INSERT INTO segments (booking_id, route_id, flight_date, airline, flight_no, origin, destination, dep_time, arr_time, arr_offset, duration_min, fare, price_per_pax)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    const { rows: sr } = await query(`INSERT INTO segments (booking_id, route_id, flight_date, airline, flight_no, origin, destination, dep_time, arr_time, arr_offset, duration_min, fare, price_per_pax)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
       [id, s.r.id, s.date, s.r.airline, s.r.flight_no, s.r.origin, s.r.destination, s.r.dep_time, s.arr_time, s.arr_offset, s.r.duration_min, s.fare, s.price]);
+    segIds.push(sr[0].id);
   }
+  const paxIds = [];
   for (const p of pax) {
-    await query(`INSERT INTO passengers (booking_id, first_name, last_name, birth_date, gender, nationality, doc_type, doc_number)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [id, p.first_name, p.last_name, p.birth_date, p.gender, p.nationality, p.doc_type, p.doc_number]);
+    const { rows: pr } = await query(`INSERT INTO passengers (booking_id, first_name, last_name, birth_date, gender, nationality, doc_type, doc_number)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [id, p.first_name, p.last_name, p.birth_date, p.gender, p.nationality, p.doc_type, p.doc_number]);
+    paxIds.push(pr[0].id);
   }
+  for (let i = 0; i < segs.length; i++) await saveSeats(id, segIds[i], paxIds, segs[i].seatSel);
+  const seatNote = segs.map((s) => s.seatSel.filter(Boolean).map((x) => x.seat).join(', ')).filter(Boolean).join(' / ');
   await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
-    [id, 'pendiente_pago', staff ? 'Reserva creada en agencia' : 'Reserva creada en línea', staff ? staff.name : null]);
+    [id, 'pendiente_pago', (staff ? 'Reserva creada en agencia' : 'Reserva creada en línea') + (seatNote ? '. Asientos: ' + seatNote : ''), staff ? staff.name : null]);
   const b = await loadBooking('id = $1', [id]);
   res.status(201).json(staff ? b : publicBooking(b));
 }));
@@ -329,6 +417,47 @@ app.post('/api/bookings/lookup', wrap(async (req, res) => {
     return res.status(404).json({ error: 'No encontramos una reserva con ese código y apellido.' });
   }
   res.json(publicBooking(b));
+}));
+
+// Cambiar asientos de un tramo. Cliente: con boleto emitido solo asientos sin costo; agencia: cualquiera.
+async function changeSeats(b, segIdx, wanted, { staff = false, userName = null } = {}) {
+  if (!['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status)) throw new HttpError(400, `La reserva está "${b.status_label}".`);
+  const sg = b.segments[Number(segIdx)];
+  if (!sg) throw new HttpError(400, 'Vuelo inválido.');
+  if (sg.date < todayStr()) throw new HttpError(400, 'Ese vuelo ya salió.');
+  const { rows } = await query('SELECT * FROM routes WHERE id = $1', [sg.route_id]);
+  if (!rows[0]) throw new HttpError(400, 'Vuelo no disponible.');
+  const settings = await getSettings();
+  const sel = await checkSeats(rows[0], sg.date, sg.fare, wanted, b.passengers.length, settings, b.id);
+  const issued = b.status !== 'pendiente_pago';
+  if (issued) {
+    // Lo ya pagado no se vuelve a cobrar: un asiento del mismo precio o menor no tiene costo extra.
+    sel.forEach((x, i) => { if (x) { const prev = sg.seats[i]; if (prev && prev.seat === x.seat) x.price = prev.price; } });
+    const extra = sel.some((x, i) => x && x.price > (sg.seats[i]?.price || 0));
+    if (extra && !staff) throw new HttpError(400, 'Tus boletos ya están emitidos: los asientos con costo adicional se compran en la agencia. Puedes elegir asientos sin costo.');
+    if (extra) sel.forEach((x, i) => { if (x && x.price > (sg.seats[i]?.price || 0)) x.note = 'cobrar en agencia'; });
+    // Con boleto emitido el total no cambia; se conserva lo pagado.
+    sel.forEach((x, i) => { if (x) x.price = Math.min(x.price, sg.seats[i]?.price ?? x.price); });
+  }
+  await saveSeats(b.id, sg.id, b.passengers.map((p) => p.id), sel);
+  if (!issued) await recalcSeatsTotal(b.id);
+  const txt = sel.map((x, i) => `P${i + 1}: ${x ? x.seat : 'sin asiento'}`).join(', ');
+  const charge = sel.filter((x) => x && x.note).map((x) => x.seat);
+  await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
+    [b.id, b.status, `Cambio de asientos ${sg.origin}-${sg.destination}: ${txt}${charge.length ? '. Cobrar en agencia: ' + charge.join(', ') : ''}`, userName]);
+}
+
+app.post('/api/bookings/:code/seats', wrap(async (req, res) => {
+  await expireOld();
+  const b = await findForCustomer(req.params.code, req.body.last_name);
+  await changeSeats(b, req.body.segment, req.body.seats);
+  res.json(publicBooking(await loadBooking('id = $1', [b.id])));
+}));
+app.put('/api/staff/bookings/:id/seats', requireStaff, wrap(async (req, res) => {
+  const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
+  if (!b) throw new HttpError(404, 'Reserva no encontrada.');
+  await changeSeats(b, req.body.segment, req.body.seats, { staff: true, userName: req.session.user.name });
+  res.json(await loadBooking('id = $1', [b.id]));
 }));
 
 // ---------- corrección de datos ----------
@@ -667,6 +796,8 @@ app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   if (!(tax >= 0 && tax <= 1)) throw new HttpError(400, 'Impuesto entre 0 y 100 %.');
   if (!(hold >= 1 && hold <= 168)) throw new HttpError(400, 'Plazo de pago entre 1 y 168 horas.');
   if (!(fee >= 0 && fee <= 500)) throw new HttpError(400, 'Cargo por servicio inválido.');
+  const seatVals = ['seat_std', 'seat_front', 'seat_exit'].map((k) => [k, req.body[k] === undefined ? null : Number(req.body[k])]);
+  for (const [k, v] of seatVals) { if (v !== null && !(v >= 0 && v <= 500)) throw new HttpError(400, 'Precio de asiento inválido.'); if (v !== null) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]); }
   for (const [k, v] of [['tax_rate', tax], ['hold_hours', hold], ['service_fee', fee]]) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]);
   res.json(await getSettings());
 }));

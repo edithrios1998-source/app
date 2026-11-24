@@ -115,6 +115,11 @@ async function init() {
   for (const col of ['payment_method TEXT', 'payment_ref TEXT', 'paid_at TIMESTAMPTZ', 'stripe_session_id TEXT']) {
     await query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ' + col);
   }
+  await query(`CREATE TABLE IF NOT EXISTS seat_assignments (
+    id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, passenger_id INTEGER NOT NULL,
+    seat TEXT NOT NULL, seat_type TEXT NOT NULL, price NUMERIC NOT NULL)`);
+  await query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS seats_total NUMERIC');
+  await query('UPDATE bookings SET seats_total = 0 WHERE seats_total IS NULL');
   await query(`CREATE TABLE IF NOT EXISTS correction_requests (
     id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, passenger_id INTEGER NOT NULL,
     changes TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
@@ -137,7 +142,7 @@ async function init() {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, r);
     }
   }
-  const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10' };
+  const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20' };
   for (const [k, v] of Object.entries(defaults)) {
     const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', [k]);
     if (!rows.length) await query('INSERT INTO settings (key, value) VALUES ($1,$2)', [k, v]);

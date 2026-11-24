@@ -57,6 +57,10 @@
           <div class="alert info hidden" id="intl-note"></div>
           <form id="pax-form" novalidate>
             <div id="pax-list"></div>
+            <h3 id="seat-title"></h3>
+            <p class="muted small-txt" style="margin:0 0 10px" id="seat-hint"></p>
+            <div class="seg-tabs" id="seat-tabs"></div>
+            <div id="seat-map"></div>
             <h3>Contacto</h3>
             <div class="row3">
               <div><label for="c-name">Nombre de contacto *</label><input id="c-name" autocomplete="name"></div>
@@ -229,7 +233,30 @@ async function showLeg() {
 function totals() {
   const sub = S.sel.reduce((t, s) => t + s.fare.price, 0) * S.pax;
   const taxes = sub * S.cfg.tax_rate + S.cfg.service_fee * S.pax;
-  return { sub, taxes, total: sub + taxes };
+  const seats = (S.seatFee || []).reduce((t, x) => t + (x || 0), 0);
+  return { sub, taxes, seats, total: sub + taxes + seats };
+}
+
+// Asientos durante la compra (opcional)
+const seatMaps = {};
+function paxNames() {
+  return $$('#pax-list .pax-card').map((c, i) => {
+    const n = [$('[name=first_name]', c).value, $('[name=last_name]', c).value].join(' ').trim();
+    return `${i + 1}. ${n || 'Pasajero ' + (i + 1)}`;
+  });
+}
+async function showSeatSeg(i) {
+  S.seatSeg = i;
+  $$('#seat-tabs button').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === i));
+  const sg = S.sel[i];
+  const key = sg.flight.route_id + sg.flight.date + sg.fare.code;
+  $('#seat-map').innerHTML = '<div class="empty">Cargando mapa de asientos…</div>';
+  try {
+    seatMaps[key] = seatMaps[key] || await api(`/api/seatmap?route_id=${sg.flight.route_id}&date=${sg.flight.date}&fare=${sg.fare.code}`);
+    mountSeatMap($('#seat-map'), { map: seatMaps[key], paxNames: paxNames(), sel: S.seats[i],
+      note: sg.fare.code === 'flexible' ? 'Tu tarifa Flexible incluye cualquier asiento sin costo.' : sg.fare.code === 'clasica' ? 'Tu tarifa Clásica incluye asientos estándar sin costo.' : 'Si no eliges, se asigna un asiento gratis al documentar.',
+      onChange: (sel, fee) => { S.seats[i] = sel; S.seatFee[i] = fee; drawSummary(); } });
+  } catch (e) { $('#seat-map').innerHTML = `<div class="alert error">${esc(e.message)}</div>`; }
 }
 
 function showCheckout() {
@@ -259,6 +286,18 @@ function showCheckout() {
     if (prev[i]) $$('[name]', c).forEach((el) => { if (prev[i][el.name] !== undefined) el.value = prev[i][el.name]; });
     if (intl) $('[name=doc_type]', c).value = 'Pasaporte';
   });
+  const key = S.sel.map((x) => x.flight.route_id + x.flight.date + x.fare.code).join('|') + S.pax;
+  if (S.seatKey !== key) { S.seatKey = key; S.seats = S.sel.map(() => Array(S.pax).fill(null)); S.seatFee = S.sel.map(() => 0); }
+  $('#seat-title').innerHTML = icon('ticket', 'ico-sm') + ' Elige tus asientos <span class="muted small-txt" style="font-weight:600">(opcional)</span>';
+  $('#seat-hint').textContent = 'Toca un pasajero y luego un asiento. Puedes elegirlos después en Mi reserva.';
+  $('#seat-tabs').innerHTML = S.sel.map((x, i) => `<button type="button" data-s="${i}">${x.flight.origin} → ${x.flight.destination} · ${esc(x.fare.name)}</button>`).join('');
+  $$('#seat-tabs button').forEach((b) => b.addEventListener('click', () => showSeatSeg(Number(b.dataset.s))));
+  $$('#pax-list [name=first_name], #pax-list [name=last_name]').forEach((inp) => inp.addEventListener('change', () => showSeatSeg(S.seatSeg || 0)));
+  showSeatSeg(0);
+  drawSummary();
+}
+
+function drawSummary() {
   const t = totals();
   $('#summary').innerHTML = `<h2>Tu viaje</h2>
     ${S.sel.map((s, i) => `<div class="sum-seg"><div class="r"><span>${s.flight.origin} → ${s.flight.destination}</span><span>${esc(s.flight.dep_time)}</span></div>
@@ -267,6 +306,7 @@ function showCheckout() {
     <div style="margin-top:10px">
       ${S.sel.map((s) => `<div class="sum-line"><span>${esc(s.fare.name)} ${s.flight.origin}–${s.flight.destination} × ${S.pax}</span><span>${usd(s.fare.price * S.pax)}</span></div>`).join('')}
       <div class="sum-line"><span>Impuestos (${Math.round(S.cfg.tax_rate * 100)} %) y cargo por servicio</span><span>${usd(t.taxes)}</span></div>
+      ${(S.seats || []).some((a) => a.some(Boolean)) ? `<div class="sum-line"><span>Asientos (${S.seats.map((a, i) => a.filter(Boolean).join(', ')).filter(Boolean).join(' / ')})</span><span>${t.seats ? usd(t.seats) : 'Sin costo'}</span></div>` : ''}
       <div class="sum-total"><span>Total USD</span><b>${usd(t.total)}</b></div>
       <div class="hint">${S.cfg.online_payments ? 'Después de reservar puedes pagar con tarjeta en línea o' : 'Tienes ' + S.cfg.hold_hours + ' h para pagar'} en la agencia${S.cfg.online_payments ? ' (plazo: ' + S.cfg.hold_hours + ' h)' : ''}.</div>
     </div>`;
@@ -286,7 +326,8 @@ $('#pax-form').addEventListener('submit', async (e) => {
   const btn = $('#book-btn'); btn.disabled = true; btn.textContent = 'Reservando…';
   try {
     const b = await api('/api/bookings', { method: 'POST', body: {
-      segments: S.sel.map((s) => ({ route_id: s.flight.route_id, date: s.flight.date, fare: s.fare.code })), passengers, contact } });
+      segments: S.sel.map((s, i) => ({ route_id: s.flight.route_id, date: s.flight.date, fare: s.fare.code, seats: S.seats[i] })), passengers, contact } });
+    Object.keys(seatMaps).forEach((k) => delete seatMaps[k]); S.seatKey = null;
     show('done');
     $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Tus asientos están apartados. ${S.cfg.online_payments ? 'Paga ahora para emitir tus boletos.' : 'Guarda tu código: lo necesitas para pagar y consultar tu reserva.'}</span></div>
       ${bookingHtml(b)}

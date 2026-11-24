@@ -114,6 +114,88 @@ function bindPayBox(b, lastName) {
   });
 }
 
+// ----- Mapa de asientos -----
+// map: respuesta de /api/seatmap. sel: arreglo por pasajero ('12A' o null). own: asientos que ya son de esta reserva.
+function mountSeatMap(el, { map, paxNames, sel, own = [], onChange, note = '' }) {
+  const S = { sel: sel.slice(), cur: Math.max(0, sel.findIndex((x) => !x)) };
+  const ownSet = new Set(own.filter(Boolean));
+  const byRow = {};
+  map.seats.forEach((x) => { (byRow[x.row] = byRow[x.row] || {})[x.letter] = x; });
+  const priceOf = (code) => map.seats.find((x) => x.seat === code)?.price || 0;
+  const fee = () => S.sel.reduce((t, c) => t + (c ? priceOf(c) : 0), 0);
+  const priceTxt = (p) => (p ? usd(p) : 'Sin costo');
+  function draw() {
+    const exitRows = new Set(map.seats.filter((x) => x.type === 'exit').map((x) => x.row));
+    let rows = '';
+    for (let r = 1; r <= map.rows; r++) {
+      if (exitRows.has(r) && !exitRows.has(r - 1)) rows += '<div class="cabin-exit"><span>◄ SALIDA</span><span>SALIDA ►</span></div>';
+      const cell = (l) => {
+        const x = byRow[r]?.[l];
+        if (!x) return '<span></span>';
+        const mine = S.sel.indexOf(x.seat);
+        const taken = x.taken && !ownSet.has(x.seat) && mine < 0;
+        return `<button type="button" class="seat ${x.type} ${taken ? 'taken' : ''} ${mine >= 0 ? 'sel' : ''}" data-seat="${x.seat}" ${taken ? 'disabled' : ''}
+          title="${x.seat} · ${esc(map.types[x.type])} · ${taken ? 'Ocupado' : priceTxt(x.price)}" aria-label="Asiento ${x.seat}${taken ? ' ocupado' : ''}">${mine >= 0 ? 'P' + (mine + 1) : l}</button>`;
+      };
+      rows += `<div class="cabin-row">${['A', 'B', 'C'].map(cell).join('')}<span class="rn">${r}</span>${['D', 'E', 'F'].map(cell).join('')}</div>`;
+    }
+    el.innerHTML = `<div class="seat-wrap">
+      <div><div class="cabin"><div class="cabin-row head"><span>A</span><span>B</span><span>C</span><span></span><span>D</span><span>E</span><span>F</span></div>${rows}</div></div>
+      <div class="seat-side">
+        <div class="pax-pick">${paxNames.map((n, i) => `<button type="button" class="${i === S.cur ? 'on' : ''}" data-p="${i}"><span>${esc(n)}</span><span class="st">${S.sel[i] || 'Elegir'}</span></button>`).join('')}</div>
+        <div class="legend">
+          <div><i style="background:#fde2c8"></i>${esc(map.types.front)} · <b>${priceTxt(map.prices.front)}</b></div>
+          <div><i style="background:#d5f2e3"></i>${esc(map.types.exit)} · <b>${priceTxt(map.prices.exit)}</b></div>
+          <div><i style="background:#dbe5f7"></i>${esc(map.types.std)} · <b>${priceTxt(map.prices.std)}</b></div>
+          <div><i style="background:#e3e7ee"></i>Ocupado</div>
+        </div>
+        ${note ? `<p class="hint" style="margin:0">${note}</p>` : ''}
+        <div class="seat-total"><span>Asientos</span><span>${priceTxt(fee())}</span></div>
+        <button type="button" class="ghost small" data-clear>Quitar asiento de ${esc(paxNames[S.cur] || '')}</button>
+      </div></div>`;
+    $$('.seat:not(:disabled)', el).forEach((b) => b.addEventListener('click', () => {
+      const code = b.dataset.seat;
+      const other = S.sel.indexOf(code);
+      if (other >= 0 && other !== S.cur) S.sel[other] = null; // pasar el asiento a quien se está eligiendo
+      S.sel[S.cur] = code;
+      const next = S.sel.findIndex((x, i) => !x && i !== S.cur);
+      S.cur = next >= 0 ? next : (S.cur + 1) % S.sel.length;
+      draw(); onChange(S.sel.slice(), fee());
+    }));
+    $$('.pax-pick button', el).forEach((b) => b.addEventListener('click', () => { S.cur = Number(b.dataset.p); draw(); }));
+    $('[data-clear]', el).addEventListener('click', () => { S.sel[S.cur] = null; draw(); onChange(S.sel.slice(), fee()); });
+  }
+  draw();
+  onChange(S.sel.slice(), fee());
+}
+const SEAT_TYPE_SHORT = { front: 'Preferente', exit: 'Salida emergencia', std: 'Estándar' };
+
+// Editor de asientos de una reserva existente (Mi reserva y panel). save(segIdx, seats) guarda y devuelve la reserva.
+function mountSeatEditor(el, b, { save, note = '', onSaved }) {
+  let seg = 0, pending = null;
+  const names = b.passengers.map((p, i) => `${i + 1}. ${p.first_name} ${p.last_name}`);
+  async function show() {
+    const sg = b.segments[seg];
+    el.innerHTML = `${b.segments.length > 1 ? `<div class="seg-tabs">${b.segments.map((x, i) => `<button type="button" class="${i === seg ? 'on' : ''}" data-s="${i}">${esc(x.origin)} → ${esc(x.destination)} · ${esc(dDate(x.date))}</button>`).join('')}</div>` : ''}
+      <div id="se-map"><div class="empty">Cargando mapa…</div></div>
+      <div class="alert error hidden" id="se-err"></div>
+      <div class="row" style="margin-top:12px"><button type="button" class="secondary" id="se-cancel">Cerrar</button><button type="button" id="se-save">Guardar asientos ${esc(sg.origin)}–${esc(sg.destination)}</button></div>`;
+    $$('.seg-tabs button', el).forEach((x) => x.addEventListener('click', () => { seg = Number(x.dataset.s); show(); }));
+    $('#se-cancel', el).addEventListener('click', () => { el.innerHTML = ''; onSaved && onSaved(null); });
+    try {
+      const map = await api(`/api/seatmap?route_id=${sg.route_id}&date=${sg.date}&fare=${sg.fare}`);
+      const cur = sg.seats.map((x) => (x ? x.seat : null));
+      mountSeatMap($('#se-map', el), { map, paxNames: names, sel: cur, own: cur, note, onChange: (sel) => { pending = sel; } });
+    } catch (e) { showMsg($('#se-err', el), e.message); }
+    $('#se-save', el).addEventListener('click', async () => {
+      hideMsg($('#se-err', el));
+      try { const nb = await save(seg, pending); b = nb; onSaved && onSaved(nb); }
+      catch (e) { showMsg($('#se-err', el), e.message); }
+    });
+  }
+  show();
+}
+
 // ----- Corrección de datos -----
 const PAX_LABELS = { first_name: 'Nombre(s)', last_name: 'Apellido(s)', birth_date: 'Fecha de nacimiento', gender: 'Sexo', nationality: 'Nacionalidad', doc_type: 'Documento', doc_number: 'Número de documento' };
 const DOC_TYPES = ['Pasaporte', 'INE', 'DNI', 'Cédula de identidad', 'Otro documento oficial'];
@@ -204,18 +286,19 @@ function bookingHtml(b, { staff = false } = {}) {
         </div>
       </div>
       <div class="ticket-stub">
-        <div><span class="muted small-txt">Pasajeros</span>${b.passengers.map((p) => `<div style="font-weight:700;font-size:.86rem">${esc(p.last_name.toUpperCase())}/${esc(p.first_name.toUpperCase())}</div>`).join('')}</div>
+        <div><span class="muted small-txt">Pasajeros · Asiento</span>${b.passengers.map((p, pi) => `<div style="font-weight:700;font-size:.86rem;display:flex;justify-content:space-between;gap:8px"><span>${esc(p.last_name.toUpperCase())}/${esc(p.first_name.toUpperCase())}</span><span style="color:var(--brand)">${s.seats && s.seats[pi] ? esc(s.seats[pi].seat) : '—'}</span></div>`).join('')}</div>
         <div class="small-txt muted">${issued ? 'Documenta 2 h antes (nacional) o 3 h (internacional).' : 'Boleto pendiente de emisión.'}</div>
       </div>
     </div>`).join('');
   const pax = `<div class="card" style="margin-bottom:14px"><h2>Pasajeros</h2><div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Nacimiento</th><th>Documento</th><th>Boleto</th></tr></thead>
-      <tbody>${b.passengers.map((p) => `<tr><td><b>${esc(p.first_name)} ${esc(p.last_name)}</b><div class="muted small-txt">${esc(p.nationality)}</div></td>
-        <td>${esc(p.birth_date)}</td><td>${esc(p.doc_type)} ${esc(p.doc_number)}</td>
+      <thead><tr><th>Nombre</th><th>Nacimiento</th><th>Documento</th><th>Asientos</th><th>Boleto</th></tr></thead>
+      <tbody>${b.passengers.map((p, pi) => `<tr><td><b>${esc(p.first_name)} ${esc(p.last_name)}</b><div class="muted small-txt">${esc(p.nationality)}</div></td>
+        <td>${esc(p.birth_date)}</td><td>${esc(p.doc_type)} ${esc(p.doc_number)}</td><td class="small-txt">${b.segments.map((sg) => `${esc(sg.origin)}–${esc(sg.destination)}: <b>${sg.seats && sg.seats[pi] ? esc(sg.seats[pi].seat) : 'Al documentar'}</b>`).join('<br>')}</td>
         <td>${p.ticket_number ? `<b>${esc(p.ticket_number)}</b>` : '<span class="muted">Pendiente</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
   const price = `<div class="card"><h2>Detalle del precio</h2>
       ${b.segments.map((s) => `<div class="sum-line"><span>${esc(s.origin)} → ${esc(s.destination)} · ${esc(s.fare_name)} × ${b.pax_count}</span><span>${usd(s.price_per_pax * b.pax_count)}</span></div>`).join('')}
       <div class="sum-line"><span>Impuestos y cargos</span><span>${usd(b.taxes)}</span></div>
+      ${b.seats_total ? `<div class="sum-line"><span>Selección de asientos</span><span>${usd(b.seats_total)}</span></div>` : ''}
       <div class="sum-total"><span>Total USD</span><b>${usd(b.total)}</b></div>
       <div class="hint">Contacto: ${esc(b.contact_name)} · ${esc(b.contact_email)} · ${esc(b.contact_phone)}</div></div>`;
   return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + correctionsHtml(b) + price;
