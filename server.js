@@ -126,11 +126,12 @@ async function loadBooking(where, params) {
   const { rows } = await query(`SELECT * FROM bookings WHERE ${where}`, params);
   const b = rows[0];
   if (!b) return null;
-  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al] = await Promise.all([
+  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al, { rows: cr }] = await Promise.all([
     query('SELECT * FROM segments WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM passengers WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM booking_events WHERE booking_id = $1 ORDER BY id', [b.id]),
     airportMap(), airlineMap(),
+    query('SELECT * FROM correction_requests WHERE booking_id = $1 ORDER BY id', [b.id]),
   ]);
   return {
     id: b.id, code: b.code, status: b.status, status_label: STATUS[b.status],
@@ -146,19 +147,26 @@ async function loadBooking(where, params) {
       dep_time: s.dep_time, arr_time: s.arr_time, arr_offset: s.arr_offset, duration_min: s.duration_min,
       fare: s.fare, fare_name: FARES[s.fare]?.name, fare_includes: FARES[s.fare]?.includes || [], price_per_pax: Number(s.price_per_pax),
     })),
+    international: segs.some((s) => ap[s.origin]?.country !== ap[s.destination]?.country),
     passengers: pax.map((p) => ({
-      first_name: p.first_name, last_name: p.last_name, birth_date: p.birth_date, gender: p.gender,
+      id: p.id, first_name: p.first_name, last_name: p.last_name, birth_date: p.birth_date, gender: p.gender,
       nationality: p.nationality, doc_type: p.doc_type, doc_number: p.doc_number, ticket_number: p.ticket_number,
     })),
     events: ev.map((e) => ({ status: e.status, label: STATUS[e.status], note: e.note, user_name: e.user_name, at: e.created_at })),
+    corrections: cr.map((c) => ({ id: c.id, passenger: pax.findIndex((p) => p.id === c.passenger_id) + 1, changes: JSON.parse(c.changes), reason: c.reason,
+      status: c.status, response: c.response, resolved_by: c.resolved_by, resolved_at: c.resolved_at, created_at: c.created_at })),
   };
 }
 
 // Vista pública: oculta documentos completos.
 function publicBooking(b) {
   const mask = (s) => (s && s.length > 3 ? '•••' + s.slice(-3) : s);
-  return { ...b, id: undefined, payment_ref: undefined, events: b.events.map(({ status, label, at }) => ({ status, label, at })),
-    passengers: b.passengers.map((p) => ({ ...p, doc_number: mask(p.doc_number) })) };
+  const isFix = (n) => /^(Datos corregidos|Solicitud de corrección|Contacto actualizado|Corrección en agencia)/.test(n || '');
+  return { ...b, id: undefined, payment_ref: undefined,
+    events: b.events.map(({ status, label, note, at }) => (isFix(note) ? { status, label: 'Corrección de datos', note, at } : { status, label, at })),
+    passengers: b.passengers.map((p) => ({ ...p, id: undefined, doc_number: mask(p.doc_number) })),
+    corrections: b.corrections.map((c) => ({ ...c, resolved_by: undefined,
+      changes: Object.fromEntries(Object.entries(c.changes).map(([k, v]) => [k, k === 'doc_number' ? { from: mask(v.from), to: mask(v.to) } : v])) })) };
 }
 
 // ---------- autenticación ----------
@@ -321,6 +329,171 @@ app.post('/api/bookings/lookup', wrap(async (req, res) => {
     return res.status(404).json({ error: 'No encontramos una reserva con ese código y apellido.' });
   }
   res.json(publicBooking(b));
+}));
+
+// ---------- corrección de datos ----------
+const PAX_FIELDS = { first_name: 'Nombre(s)', last_name: 'Apellido(s)', birth_date: 'Fecha de nacimiento', gender: 'Sexo', nationality: 'Nacionalidad', doc_type: 'Tipo de documento', doc_number: 'Número de documento' };
+const MAX_NAME_EDIT = 3; // letras que se pueden corregir en el nombre después de emitir el boleto
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[m][n];
+}
+const nameEdits = (from, to) => levenshtein(norm(`${from.first_name} ${from.last_name}`).replace(/\s+/g, ' '), norm(`${to.first_name} ${to.last_name}`).replace(/\s+/g, ' '));
+
+// Valida un pasajero con las mismas reglas de la reserva; el número de documento vacío conserva el actual.
+function validatePassenger(input, current, international, n) {
+  const merged = { ...current };
+  for (const k of Object.keys(PAX_FIELDS)) {
+    if (input[k] === undefined) continue;
+    if (k === 'doc_number' && !String(input[k]).trim()) continue;
+    merged[k] = input[k];
+  }
+  try { return readPassengers([merged], international)[0]; }
+  catch (e) { throw new HttpError(400, e.message.replace('Pasajero 1', 'Pasajero ' + n)); }
+}
+function diff(current, next) {
+  const out = {};
+  for (const k of Object.keys(PAX_FIELDS)) {
+    if ((current[k] || '') !== (next[k] || '')) out[k] = { from: current[k] || '', to: next[k] || '' };
+  }
+  return out;
+}
+const diffText = (n, d) => `Pasajero ${n}: ` + Object.entries(d).map(([k, v]) => `${PAX_FIELDS[k]} "${k === 'doc_number' ? '•••' + String(v.from).slice(-3) : v.from}" → "${k === 'doc_number' ? '•••' + String(v.to).slice(-3) : v.to}"`).join(', ');
+
+async function applyPassenger(passengerId, data) {
+  await query(`UPDATE passengers SET first_name=$1, last_name=$2, birth_date=$3, gender=$4, nationality=$5, doc_type=$6, doc_number=$7 WHERE id=$8`,
+    [data.first_name, data.last_name, data.birth_date, data.gender, data.nationality, data.doc_type, data.doc_number, passengerId]);
+}
+function readContact(c, current) {
+  const x = { name: str(c?.name ?? current.contact_name, 120), email: str(c?.email ?? current.contact_email, 120).toLowerCase(), phone: str(c?.phone ?? current.contact_phone, 30) };
+  if (x.name.length < 3) throw new HttpError(400, 'Escribe el nombre de contacto.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x.email)) throw new HttpError(400, 'Correo de contacto inválido.');
+  if (x.phone.replace(/\D/g, '').length < 7) throw new HttpError(400, 'Teléfono de contacto inválido.');
+  return x;
+}
+async function applyContact(b, c) {
+  if (c.name === b.contact_name && c.email === b.contact_email && c.phone === b.contact_phone) return null;
+  await query('UPDATE bookings SET contact_name=$1, contact_email=$2, contact_phone=$3, updated_at=NOW() WHERE id=$4', [c.name, c.email, c.phone, b.id]);
+  return 'Contacto actualizado';
+}
+const log = (b, note, user) => query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)', [b.id, b.status, note, user || null]);
+const nameRuleMsg = `Después de emitir el boleto solo se pueden corregir hasta ${MAX_NAME_EDIT} letras del nombre (errores de escritura). Un cambio mayor es un cambio de pasajero: cancela y haz una reserva nueva.`;
+
+async function findForCustomer(code, lastName) {
+  const b = await loadBooking('code = $1', [str(code, 10).toUpperCase()]);
+  const last = norm(lastName);
+  if (!b || !last || !b.passengers.some((p) => norm(p.last_name) === last || norm(p.last_name).split(/\s+/).includes(last))) {
+    throw new HttpError(404, 'No encontramos una reserva con ese código y apellido.');
+  }
+  return b;
+}
+
+// Cliente: antes de pagar corrige directo; con boleto emitido envía solicitud a la agencia.
+app.post('/api/bookings/:code/correct', wrap(async (req, res) => {
+  await expireOld();
+  const b = await findForCustomer(req.params.code, req.body.last_name);
+  if (!['pendiente_pago', 'emitido'].includes(b.status)) throw new HttpError(400, `La reserva está "${b.status_label}" y ya no se puede corregir.`);
+  const list = Array.isArray(req.body.passengers) ? req.body.passengers : [];
+  const changes = [];
+  b.passengers.forEach((cur, i) => {
+    if (!list[i]) return;
+    const next = validatePassenger(list[i], cur, b.international, i + 1);
+    const d = diff(cur, next);
+    if (Object.keys(d).length) changes.push({ cur, next, d, n: i + 1 });
+  });
+  const contact = readContact(req.body.contact, b);
+  const notes = [];
+  const c = await applyContact(b, contact);
+  if (c) notes.push(c);
+
+  if (b.status === 'pendiente_pago') {
+    for (const ch of changes) { await applyPassenger(ch.cur.id, ch.next); notes.push(diffText(ch.n, ch.d)); }
+    if (notes.length) await log(b, 'Datos corregidos por el cliente. ' + notes.join('; '));
+    return res.json({ applied: notes.length > 0, requested: 0, booking: publicBooking(await loadBooking('id = $1', [b.id])) });
+  }
+
+  // Boleto emitido: solicitud a revisión
+  const reason = str(req.body.reason, 300);
+  if (changes.length && reason.length < 5) throw new HttpError(400, 'Explica brevemente el motivo de la corrección.');
+  for (const ch of changes) {
+    if ((ch.d.first_name || ch.d.last_name) && nameEdits(ch.cur, ch.next) > MAX_NAME_EDIT) throw new HttpError(400, `Pasajero ${ch.n}: ${nameRuleMsg}`);
+    const { rows } = await query("SELECT 1 FROM correction_requests WHERE passenger_id = $1 AND status = 'pendiente'", [ch.cur.id]);
+    if (rows.length) throw new HttpError(400, `Pasajero ${ch.n}: ya tiene una solicitud de corrección en revisión.`);
+  }
+  for (const ch of changes) {
+    const payload = Object.fromEntries(Object.entries(ch.d));
+    await query("INSERT INTO correction_requests (booking_id, passenger_id, changes, reason, status) VALUES ($1,$2,$3,$4,'pendiente')",
+      [b.id, ch.cur.id, JSON.stringify(payload), reason]);
+    notes.push('Solicitud de corrección: ' + diffText(ch.n, ch.d));
+  }
+  if (notes.length) await log(b, notes.join('; '));
+  res.json({ applied: !!c, requested: changes.length, booking: publicBooking(await loadBooking('id = $1', [b.id])) });
+}));
+
+// Agencia: corrección directa (con la misma regla de nombre si el boleto está emitido).
+app.put('/api/staff/bookings/:id/correct', requireStaff, wrap(async (req, res) => {
+  const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
+  if (!b) throw new HttpError(404, 'Reserva no encontrada.');
+  if (!['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status)) throw new HttpError(400, `La reserva está "${b.status_label}" y no se puede corregir.`);
+  const list = Array.isArray(req.body.passengers) ? req.body.passengers : [];
+  const notes = [];
+  const pend = [];
+  b.passengers.forEach((cur, i) => {
+    if (!list[i]) return;
+    const next = validatePassenger(list[i], cur, b.international, i + 1);
+    const d = diff(cur, next);
+    if (!Object.keys(d).length) return;
+    if (b.status !== 'pendiente_pago' && (d.first_name || d.last_name) && nameEdits(cur, next) > MAX_NAME_EDIT) throw new HttpError(400, `Pasajero ${i + 1}: ${nameRuleMsg}`);
+    pend.push({ cur, next, d, n: i + 1 });
+  });
+  const contact = readContact(req.body.contact, b);
+  for (const p of pend) { await applyPassenger(p.cur.id, p.next); notes.push(diffText(p.n, p.d)); }
+  const c = await applyContact(b, contact);
+  if (c) notes.push(c);
+  const reason = str(req.body.reason, 200);
+  if (notes.length) await log(b, 'Corrección en agencia' + (reason ? ` (${reason})` : '') + '. ' + notes.join('; '), req.session.user.name);
+  res.json(await loadBooking('id = $1', [b.id]));
+}));
+
+app.get('/api/staff/corrections', requireStaff, wrap(async (req, res) => {
+  const st = ['pendiente', 'aprobada', 'rechazada'].includes(req.query.status) ? req.query.status : 'pendiente';
+  const { rows } = await query(
+    `SELECT c.*, b.code, b.status AS booking_status, p.first_name, p.last_name FROM correction_requests c
+     JOIN bookings b ON b.id = c.booking_id JOIN passengers p ON p.id = c.passenger_id
+     WHERE c.status = $1 ORDER BY c.id DESC LIMIT 200`, [st]);
+  res.json(rows.map((r) => ({ id: r.id, booking_id: r.booking_id, code: r.code, booking_status: r.booking_status,
+    passenger: `${r.first_name} ${r.last_name}`, changes: JSON.parse(r.changes), fields: PAX_FIELDS, reason: r.reason,
+    status: r.status, response: r.response, resolved_by: r.resolved_by, resolved_at: r.resolved_at, created_at: r.created_at })));
+}));
+
+app.post('/api/staff/corrections/:id/resolve', requireStaff, wrap(async (req, res) => {
+  const { rows } = await query('SELECT * FROM correction_requests WHERE id = $1', [Number(req.params.id) || 0]);
+  const cr = rows[0];
+  if (!cr) throw new HttpError(404, 'Solicitud no encontrada.');
+  if (cr.status !== 'pendiente') throw new HttpError(400, 'Esta solicitud ya fue resuelta.');
+  const approve = req.body.approve === true;
+  const response = str(req.body.response, 300);
+  if (!approve && response.length < 3) throw new HttpError(400, 'Escribe el motivo del rechazo para el cliente.');
+  const b = await loadBooking('id = $1', [cr.booking_id]);
+  const idx = b.passengers.findIndex((p) => p.id === cr.passenger_id);
+  const cur = b.passengers[idx];
+  if (approve) {
+    const changes = JSON.parse(cr.changes);
+    const input = Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.to]));
+    const next = validatePassenger(input, cur, b.international, idx + 1);
+    if ((changes.first_name || changes.last_name) && nameEdits(cur, next) > MAX_NAME_EDIT) throw new HttpError(400, nameRuleMsg);
+    await applyPassenger(cur.id, next);
+  }
+  await query('UPDATE correction_requests SET status=$1, response=$2, resolved_by=$3, resolved_at=NOW() WHERE id=$4',
+    [approve ? 'aprobada' : 'rechazada', response || null, req.session.user.name, cr.id]);
+  await log(b, `Solicitud de corrección del pasajero ${idx + 1} ${approve ? 'aprobada' : 'rechazada'}${response ? ': ' + response : ''}`, req.session.user.name);
+  res.json({ ok: true });
 }));
 
 // ---------- personal ----------

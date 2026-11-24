@@ -114,6 +114,64 @@ function bindPayBox(b, lastName) {
   });
 }
 
+// ----- Corrección de datos -----
+const PAX_LABELS = { first_name: 'Nombre(s)', last_name: 'Apellido(s)', birth_date: 'Fecha de nacimiento', gender: 'Sexo', nationality: 'Nacionalidad', doc_type: 'Documento', doc_number: 'Número de documento' };
+const DOC_TYPES = ['Pasaporte', 'INE', 'DNI', 'Cédula de identidad', 'Otro documento oficial'];
+const CR_STATUS = { pendiente: ['En revisión', 'b-pendiente_pago'], aprobada: ['Aprobada', 'b-emitido'], rechazada: ['Rechazada', 'b-cancelado'] };
+
+function correctionsHtml(b) {
+  if (!b.corrections || !b.corrections.length) return '';
+  return `<div class="card" style="margin-bottom:14px"><h2>Solicitudes de corrección</h2>
+    ${b.corrections.slice().reverse().map((c) => `<div class="sum-seg">
+      <div class="r"><span>Pasajero ${c.passenger}</span><span class="badge ${CR_STATUS[c.status][1]}">${CR_STATUS[c.status][0]}</span></div>
+      <div class="d">${Object.entries(c.changes).map(([k, v]) => `${PAX_LABELS[k] || k}: <s>${esc(v.from || '—')}</s> → <b>${esc(v.to || '—')}</b>`).join(' · ')}</div>
+      <div class="d">Motivo: ${esc(c.reason)} · ${dt(c.created_at)}</div>
+      ${c.response ? `<div class="d">Respuesta de la agencia: <b>${esc(c.response)}</b></div>` : ''}</div>`).join('')}</div>`;
+}
+
+function correctionFormHtml(b, { staff = false } = {}) {
+  const issued = b.status !== 'pendiente_pago';
+  const opt = (v, cur, label) => `<option value="${esc(v)}" ${v === (cur || '') ? 'selected' : ''}>${esc(label || v)}</option>`;
+  return `<form id="corr-form" novalidate>
+    ${issued && !staff ? `<div class="alert info">${icon('info', 'ico-sm')}<span>Tus boletos ya están emitidos: los cambios de pasajeros se envían como <b>solicitud</b> a la agencia, que la revisa. En el nombre solo se pueden corregir hasta 3 letras (errores de escritura). Los datos de contacto se actualizan de inmediato.</span></div>`
+      : issued ? `<div class="alert warn">${icon('info', 'ico-sm')}<span>Boleto emitido: en el nombre solo se permiten hasta 3 letras de diferencia.</span></div>`
+      : `<div class="alert info">${icon('info', 'ico-sm')}<span>Tu reserva aún no está pagada: los cambios se guardan de inmediato.</span></div>`}
+    ${b.international ? `<p class="hint">${icon('passport', 'ico-sm')} Vuelo internacional: el documento debe ser pasaporte.</p>` : ''}
+    ${b.passengers.map((p, i) => `<div class="pax-card" data-i="${i}"><h4><span class="n">${i + 1}</span> Pasajero ${i + 1}${p.ticket_number ? ` · Boleto ${esc(p.ticket_number)}` : ''}</h4>
+      <div class="row">
+        <div><label>Nombre(s)</label><input name="first_name" value="${esc(p.first_name)}"></div>
+        <div><label>Apellido(s)</label><input name="last_name" value="${esc(p.last_name)}"></div>
+      </div>
+      <div class="row3">
+        <div><label>Fecha de nacimiento</label><input name="birth_date" type="date" value="${esc(p.birth_date)}"></div>
+        <div><label>Sexo</label><select name="gender">${opt('', p.gender, 'Prefiero no decir')}${opt('F', p.gender, 'Femenino')}${opt('M', p.gender, 'Masculino')}${opt('X', p.gender, 'No binario')}</select></div>
+        <div><label>Nacionalidad</label><input name="nationality" value="${esc(p.nationality)}"></div>
+      </div>
+      <div class="row">
+        <div><label>Documento</label><select name="doc_type">${DOC_TYPES.map((d) => opt(d, p.doc_type)).join('')}</select></div>
+        <div><label>Número de documento</label>${staff ? `<input name="doc_number" value="${esc(p.doc_number)}">`
+          : `<input name="doc_number" value="" placeholder="Sin cambios (termina en ${esc(String(p.doc_number).slice(-3))})">`}</div>
+      </div></div>`).join('')}
+    <h3>${icon('user', 'ico-sm')} Contacto</h3>
+    <div class="row3">
+      <div><label>Nombre</label><input name="c_name" value="${esc(b.contact_name)}"></div>
+      <div><label>Correo</label><input name="c_email" type="email" value="${esc(b.contact_email)}"></div>
+      <div><label>Teléfono</label><input name="c_phone" type="tel" value="${esc(b.contact_phone)}"></div>
+    </div>
+    ${issued || staff ? `<label for="corr-reason">${staff ? 'Motivo (opcional)' : 'Motivo de la corrección *'}</label><textarea id="corr-reason" rows="2" maxlength="300" placeholder="Ej. el apellido lleva acento, la fecha de nacimiento estaba mal"></textarea>` : ''}
+    <div class="alert error hidden" id="corr-err"></div>
+    <div class="row" style="margin-top:14px"><button type="button" class="secondary" id="corr-cancel">Cancelar</button><button type="submit">${issued && !staff ? 'Enviar solicitud' : 'Guardar cambios'}</button></div>
+  </form>`;
+}
+function collectCorrection() {
+  const f = $('#corr-form');
+  return {
+    passengers: $$('.pax-card', f).map((c) => Object.fromEntries($$('[name]', c).map((i) => [i.name, i.value.trim()]))),
+    contact: { name: $('[name=c_name]', f).value, email: $('[name=c_email]', f).value, phone: $('[name=c_phone]', f).value },
+    reason: $('#corr-reason') ? $('#corr-reason').value : '',
+  };
+}
+
 // Boleto / itinerario de una reserva
 function bookingHtml(b, { staff = false } = {}) {
   const issued = b.status === 'emitido';
@@ -160,5 +218,5 @@ function bookingHtml(b, { staff = false } = {}) {
       <div class="sum-line"><span>Impuestos y cargos</span><span>${usd(b.taxes)}</span></div>
       <div class="sum-total"><span>Total USD</span><b>${usd(b.total)}</b></div>
       <div class="hint">Contacto: ${esc(b.contact_name)} · ${esc(b.contact_email)} · ${esc(b.contact_phone)}</div></div>`;
-  return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + price;
+  return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + correctionsHtml(b) + price;
 }

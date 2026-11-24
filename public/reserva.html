@@ -30,10 +30,40 @@ const qs = new URLSearchParams(location.search);
 if (qs.get('code')) $('#code').value = qs.get('code');
 
 function render(b, lastName, banner = '') {
-  $('#res').innerHTML = banner + bookingHtml(b) + `
-    <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b><br><span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
+  const canFix = lastName && ['pendiente_pago', 'emitido'].includes(b.status);
+  $('#res').innerHTML = banner + bookingHtml(b) + (canFix ? `
+    <div class="card no-print" id="fix-card" style="margin-top:14px">
+      <div class="modal-head" style="flex-wrap:wrap"><div><h2>¿Algún dato está mal?</h2>
+        <p class="muted small-txt" style="margin:0">Corrige nombres, fecha de nacimiento, documento o datos de contacto.</p></div>
+        <button class="secondary" id="fix-open" type="button">Corregir datos</button></div>
+      <div id="fix-body"></div>
+    </div>` : '') + `
+    <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b>${ev.note ? `<div class="small-txt">${esc(ev.note)}</div>` : ""}<span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
     <div class="row no-print" style="margin-top:16px;max-width:420px"><button class="secondary" onclick="window.print()">Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button><a class="btn" href="/">Buscar otro vuelo</a></div>`;
   if (lastName) bindPayBox(b, lastName);
+  if (canFix) $('#fix-open').addEventListener('click', () => openFix(b, lastName));
+}
+
+function openFix(b, lastName) {
+  $('#fix-open').classList.add('hidden');
+  $('#fix-body').innerHTML = correctionFormHtml(b);
+  $('#corr-cancel').onclick = () => { $('#fix-body').innerHTML = ''; $('#fix-open').classList.remove('hidden'); };
+  $('#corr-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    hideMsg($('#corr-err'));
+    const data = collectCorrection();
+    const btn = $('#corr-form button[type=submit]'); btn.disabled = true;
+    try {
+      const r = await api(`/api/bookings/${encodeURIComponent(b.code)}/correct`, { method: 'POST', body: { last_name: lastName, ...data } });
+      // Si se corrigió el apellido usado para entrar, seguir con el nuevo.
+      const keep = r.booking.passengers.some((p) => p.last_name.toLowerCase().includes(lastName.toLowerCase())) ? lastName : r.booking.passengers[0].last_name;
+      const msg = r.requested
+        ? `Enviamos ${r.requested} solicitud${r.requested > 1 ? 'es' : ''} de corrección a la agencia. Verás la respuesta en esta página.${r.applied ? ' Tus datos de contacto ya se actualizaron.' : ''}`
+        : r.applied ? 'Listo: tus datos se corrigieron.' : 'No hubo cambios que guardar.';
+      render(r.booking, keep, `<div class="alert ok">${icon('check', 'ico-sm')}<span>${esc(msg)}</span></div>`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (ex) { showMsg($('#corr-err'), ex.message); btn.disabled = false; }
+  });
 }
 
 $('#f').addEventListener('submit', async (e) => {

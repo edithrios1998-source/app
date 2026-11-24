@@ -29,6 +29,7 @@
     </div>
     <div class="tabs">
       <button class="active" data-tab="bookings">Reservas</button>
+      <button data-tab="corrections">Correcciones <span class="badge b-pendiente_pago hidden" id="corr-count"></span></button>
       <button data-tab="routes" class="admin-only">Vuelos y horarios</button>
       <button data-tab="catalog" class="admin-only">Aerolíneas y aeropuertos</button>
       <button data-tab="settings" class="admin-only">Precios y plazos</button>
@@ -44,6 +45,15 @@
       </div>
       <div class="card table-wrap" style="padding:0">
         <table><thead><tr><th>Código</th><th>Creada</th><th>Contacto</th><th>Vuelos</th><th>Pax</th><th>Total</th><th>Estado</th></tr></thead><tbody id="rows"></tbody></table>
+      </div>
+    </section>
+
+    <section data-pane="corrections" class="hidden">
+      <div class="card">
+        <div class="modal-head" style="flex-wrap:wrap"><div><h2>Solicitudes de corrección</h2>
+          <p class="muted small-txt" style="margin:0">Cambios que pidieron los clientes con boleto ya emitido. Revisa contra el documento antes de aprobar.</p></div>
+          <select id="cs" style="width:auto"><option value="pendiente">En revisión</option><option value="aprobada">Aprobadas</option><option value="rechazada">Rechazadas</option></select></div>
+        <div id="corr-list" style="margin-top:12px"></div>
       </div>
     </section>
 
@@ -137,6 +147,7 @@ async function boot() {
   $$('.admin-only').forEach((el) => el.classList.toggle('hidden', me.role !== 'admin'));
   $('#fs').innerHTML = '<option value="">Todos los estados</option>' + Object.entries(cfg.statuses).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   loadBookings();
+  refreshCorrCount().catch(() => {});
 }
 $('#login-f').addEventListener('submit', async (e) => {
   e.preventDefault(); hideMsg($('#login-err'));
@@ -147,7 +158,7 @@ $('#logout').addEventListener('click', async () => { await api('/api/auth/logout
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => {
   $$('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
   $$('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== b.dataset.tab));
-  ({ bookings: loadBookings, routes: loadRoutes, catalog: loadCatalog, settings: loadSettings, users: loadUsers })[b.dataset.tab]();
+  ({ bookings: loadBookings, corrections: loadCorrections, routes: loadRoutes, catalog: loadCatalog, settings: loadSettings, users: loadUsers })[b.dataset.tab]();
 }));
 
 // ----- reservas -----
@@ -169,7 +180,8 @@ async function loadBookings() {
 }
 async function openBooking(id) {
   const b = await api('/api/staff/bookings/' + id);
-  const canCancel = b.status === 'pendiente_pago' || (b.status === 'emitido' && me.role === 'admin');
+  const canCancel = b.status === 'pendiente_pago' || (['emitido', 'pago_revision'].includes(b.status) && me.role === 'admin');
+  const canFix = ['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status);
   $('#mb').innerHTML = `<div class="modal-head no-print" style="margin-bottom:12px"><h2 style="margin:0">Reserva ${esc(b.code)}</h2><button class="secondary small" id="mclose">Cerrar</button></div>
     ${bookingHtml(b, { staff: true })}
     <div class="card no-print" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((e) => `<li><b>${esc(e.label)}</b>${e.note ? ' — ' + esc(e.note) : ''}<br><span class="muted small-txt">${dt(e.at)}${e.user_name ? ' · ' + esc(e.user_name) : ''}</span></li>`).join('')}</ul></div>
@@ -182,19 +194,65 @@ async function openBooking(id) {
       <div class="alert error hidden" id="merr"></div>
       <div class="row" style="margin-top:12px">
         <button class="secondary" onclick="window.print()">Imprimir</button>
+        ${canFix ? '<button class="secondary" id="fix">Corregir datos</button>' : ''}
         ${canCancel ? '<button class="danger" id="cancel">Cancelar reserva</button>' : ''}
       </div>
+      <div id="fix-body"></div>
     </div>`;
   $('#modal').classList.remove('hidden'); $('#mclose').onclick = closeModal;
   if ($('#issue')) $('#issue').onclick = async () => {
     try { await api(`/api/staff/bookings/${b.id}/issue`, { method: 'POST', body: { payment_method: $('#pm').value, note: $('#pn').value } }); loadBookings(); openBooking(b.id); }
     catch (e) { showMsg($('#merr'), e.message); }
   };
+  if ($('#fix')) $('#fix').onclick = () => {
+    $('#fix').classList.add('hidden');
+    $('#fix-body').innerHTML = '<h2 style="margin-top:18px">Corregir datos</h2>' + correctionFormHtml(b, { staff: true });
+    $('#fix-body').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('#corr-cancel').onclick = () => { $('#fix-body').innerHTML = ''; $('#fix').classList.remove('hidden'); };
+    $('#corr-form').addEventListener('submit', async (e) => {
+      e.preventDefault(); hideMsg($('#corr-err'));
+      try { await api('/api/staff/bookings/' + b.id + '/correct', { method: 'PUT', body: collectCorrection() }); loadBookings(); openBooking(b.id); }
+      catch (ex) { showMsg($('#corr-err'), ex.message); }
+    });
+  };
   if ($('#cancel')) $('#cancel').onclick = async () => {
     if (!confirm(`¿Cancelar la reserva ${b.code}? Los asientos se liberan y no se puede deshacer.`)) return;
     try { await api(`/api/staff/bookings/${b.id}/cancel`, { method: 'POST', body: {} }); loadBookings(); openBooking(b.id); }
     catch (e) { showMsg($('#merr'), e.message); }
   };
+}
+
+// ----- correcciones -----
+$('#cs').addEventListener('change', loadCorrections);
+async function refreshCorrCount() {
+  const n = (await api('/api/staff/corrections?status=pendiente')).length;
+  $('#corr-count').textContent = n; $('#corr-count').classList.toggle('hidden', !n);
+}
+async function loadCorrections() {
+  const list = await api('/api/staff/corrections?status=' + $('#cs').value);
+  refreshCorrCount();
+  $('#corr-list').innerHTML = list.length ? list.map((c) => `
+    <div class="pax-card" data-id="${c.id}">
+      <div class="modal-head" style="flex-wrap:wrap"><h4><span class="n">${esc(c.code.slice(0, 2))}</span> Reserva <a href="#" data-open="${c.booking_id}">${esc(c.code)}</a> · ${esc(c.passenger)}</h4>
+        <span class="muted small-txt">${dt(c.created_at)}</span></div>
+      <table style="margin-top:10px"><thead><tr><th>Dato</th><th>Actual</th><th>Corrección pedida</th></tr></thead><tbody>
+        ${Object.entries(c.changes).map(([k, v]) => `<tr><td>${esc(c.fields[k] || k)}</td><td><s>${esc(v.from || '—')}</s></td><td><b>${esc(v.to || '—')}</b></td></tr>`).join('')}</tbody></table>
+      <p class="small-txt" style="margin:10px 0 0"><b>Motivo del cliente:</b> ${esc(c.reason)}</p>
+      ${c.status === 'pendiente' ? `
+        <div class="row" style="align-items:end;margin-top:6px">
+          <div><label>Respuesta al cliente (obligatoria si rechazas)</label><input data-k="resp" maxlength="300" placeholder="Ej. Corregido según pasaporte"></div>
+          <div style="display:flex;gap:8px"><button class="danger" data-act="no">Rechazar</button><button class="accent" data-act="yes">Aprobar y aplicar</button></div>
+        </div><div class="alert error hidden" data-k="err"></div>`
+        : `<p class="small-txt muted" style="margin:8px 0 0"><span class="badge ${CR_STATUS[c.status][1]}">${CR_STATUS[c.status][0]}</span> por ${esc(c.resolved_by || '')} · ${c.resolved_at ? dt(c.resolved_at) : ''}${c.response ? ' · ' + esc(c.response) : ''}</p>`}
+    </div>`).join('') : '<div class="empty">No hay solicitudes.</div>';
+  $$('#corr-list [data-open]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openBooking(a.dataset.open); });
+  $$('#corr-list .pax-card').forEach((card) => $$('[data-act]', card).forEach((btn) => btn.onclick = async () => {
+    const approve = btn.dataset.act === 'yes';
+    try {
+      await api('/api/staff/corrections/' + card.dataset.id + '/resolve', { method: 'POST', body: { approve, response: $('[data-k=resp]', card).value } });
+      loadCorrections();
+    } catch (e) { showMsg($('[data-k=err]', card), e.message); }
+  }));
 }
 
 // ----- catálogo (admin) -----

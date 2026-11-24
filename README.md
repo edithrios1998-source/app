@@ -17,6 +17,7 @@ El cliente puede **pagar en línea con tarjeta (Stripe)** y sus boletos se emite
 - **Precio por pasajero:** precio base del vuelo × tarifa (Básica ×1, Clásica ×1.30, Flexible ×1.75), +10 % si faltan menos de 21 días y +25 % si faltan menos de 7.
 - **Impuestos y cargos:** porcentaje de impuestos + cargo por servicio por pasajero (configurables).
 - **Plazo de pago:** la reserva aparta asientos durante el plazo configurado (24 h por defecto); si no se paga, vence y libera los asientos.
+- **Corrección de datos:** antes de pagar, el cliente corrige pasajeros y contacto desde Mi reserva. Con boleto emitido, el contacto se actualiza al momento y los cambios de pasajeros llegan como solicitud a la pestaña Correcciones de la agencia. En el nombre solo se permiten hasta 3 letras de diferencia después de emitir. La agencia también corrige directamente; todo queda en el historial.
 - **Vuelos internacionales:** exigen pasaporte para cada pasajero.
 - **Hora de llegada:** se calcula con la duración y la diferencia UTC de cada aeropuerto (ajustable en el panel por horario de verano).
 - **Estados:** Pendiente de pago → Boleto emitido; o Cancelada / Vencida. Si un pago en línea llega para una reserva vencida sin asientos, cancelada o con monto distinto, queda en *Pagada: requiere revisión* para reembolsar desde Stripe.

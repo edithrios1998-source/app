@@ -115,6 +115,11 @@ async function init() {
   for (const col of ['payment_method TEXT', 'payment_ref TEXT', 'paid_at TIMESTAMPTZ', 'stripe_session_id TEXT']) {
     await query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ' + col);
   }
+  await query(`CREATE TABLE IF NOT EXISTS correction_requests (
+    id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, passenger_id INTEGER NOT NULL,
+    changes TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+    response TEXT, resolved_by TEXT, resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await query(`CREATE TABLE IF NOT EXISTS booking_events (
     id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, status TEXT NOT NULL, note TEXT, user_name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
