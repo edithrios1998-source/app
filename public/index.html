@@ -112,6 +112,8 @@ const apBy = (c) => S.airports.find((a) => a.code === c);
 (async function boot() {
   const [airports, map, cfg] = await Promise.all([api('/api/airports'), api('/api/routes-map'), api('/api/config')]);
   Object.assign(S, { airports, map, cfg });
+  window.ONLINE_PAY = cfg.online_payments;
+  if (cfg.online_payments) $('#book-btn').textContent = 'Reservar y continuar al pago';
   const origins = airports.filter((a) => map[a.code]);
   const groups = (list) => [...new Set(list.map((a) => a.country))].map((c) =>
     `<optgroup label="${esc(c)}">${list.filter((a) => a.country === c).map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code})</option>`).join('')}</optgroup>`).join('');
@@ -266,7 +268,7 @@ function showCheckout() {
       ${S.sel.map((s) => `<div class="sum-line"><span>${esc(s.fare.name)} ${s.flight.origin}–${s.flight.destination} × ${S.pax}</span><span>${usd(s.fare.price * S.pax)}</span></div>`).join('')}
       <div class="sum-line"><span>Impuestos (${Math.round(S.cfg.tax_rate * 100)} %) y cargo por servicio</span><span>${usd(t.taxes)}</span></div>
       <div class="sum-total"><span>Total USD</span><b>${usd(t.total)}</b></div>
-      <div class="hint">Tienes ${S.cfg.hold_hours} h para pagar en la agencia después de reservar.</div>
+      <div class="hint">${S.cfg.online_payments ? 'Después de reservar puedes pagar con tarjeta en línea o' : 'Tienes ' + S.cfg.hold_hours + ' h para pagar'} en la agencia${S.cfg.online_payments ? ' (plazo: ' + S.cfg.hold_hours + ' h)' : ''}.</div>
     </div>`;
 }
 $('#back-results').addEventListener('click', () => { S.leg = 0; showLeg(); });
@@ -286,12 +288,13 @@ $('#pax-form').addEventListener('submit', async (e) => {
     const b = await api('/api/bookings', { method: 'POST', body: {
       segments: S.sel.map((s) => ({ route_id: s.flight.route_id, date: s.flight.date, fare: s.fare.code })), passengers, contact } });
     show('done');
-    $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Guarda tu código. Lo necesitas para pagar y para consultar tu reserva.</span></div>
+    $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Tus asientos están apartados. ${S.cfg.online_payments ? 'Paga ahora para emitir tus boletos.' : 'Guarda tu código: lo necesitas para pagar y consultar tu reserva.'}</span></div>
       ${bookingHtml(b)}
       <div class="row no-print" style="margin-top:16px;max-width:520px"><button class="secondary" onclick="window.print()">Imprimir</button><a class="btn" href="/reserva?code=${esc(b.code)}">Ver mi reserva</a></div>`;
+    bindPayBox(b, passengers[0].last_name);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (ex) { showMsg(err, ex.message); }
-  finally { btn.disabled = false; btn.textContent = 'Reservar y apartar asientos'; }
+  finally { btn.disabled = false; btn.textContent = S.cfg.online_payments ? 'Reservar y continuar al pago' : 'Reservar y apartar asientos'; }
 });
 </script>
 </body>

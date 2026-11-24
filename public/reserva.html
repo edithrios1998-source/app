@@ -28,16 +28,46 @@
 renderHeader('/reserva');
 const qs = new URLSearchParams(location.search);
 if (qs.get('code')) $('#code').value = qs.get('code');
+
+function render(b, lastName, banner = '') {
+  $('#res').innerHTML = banner + bookingHtml(b) + `
+    <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b><br><span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
+    <div class="row no-print" style="margin-top:16px;max-width:420px"><button class="secondary" onclick="window.print()">Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button><a class="btn" href="/">Buscar otro vuelo</a></div>`;
+  if (lastName) bindPayBox(b, lastName);
+}
+
 $('#f').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideMsg($('#err')); $('#res').innerHTML = '';
   try {
-    const b = await api('/api/bookings/lookup', { method: 'POST', body: { code: $('#code').value.trim(), last_name: $('#last').value } });
-    $('#res').innerHTML = bookingHtml(b) + `
-      <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b><br><span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
-      <div class="row no-print" style="margin-top:16px;max-width:420px"><button class="secondary" onclick="window.print()">Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button><a class="btn" href="/">Buscar otro vuelo</a></div>`;
+    const last = $('#last').value;
+    const b = await api('/api/bookings/lookup', { method: 'POST', body: { code: $('#code').value.trim(), last_name: last } });
+    render(b, last);
   } catch (ex) { showMsg($('#err'), ex.message); }
 });
+
+(async () => {
+  window.ONLINE_PAY = (await api('/api/config')).online_payments;
+  // Regreso desde la página de pago
+  if (qs.get('session_id') && qs.get('code')) {
+    $('#find').classList.add('hidden');
+    $('#res').innerHTML = '<div class="empty">Confirmando tu pago…</div>';
+    try {
+      const r = await api('/api/payments/confirm', { method: 'POST', body: { code: qs.get('code'), session_id: qs.get('session_id') } });
+      const ok = r.booking.status === 'emitido';
+      render(r.booking, null, ok
+        ? `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Pago recibido!</b> Tus boletos están emitidos. Te recomendamos imprimir o guardar esta página.</span></div>`
+        : r.paid ? '' : `<div class="alert warn">${icon('clock', 'ico-sm')}<span>Tu pago aún se está procesando. Vuelve a consultar en unos minutos.</span></div>`);
+      history.replaceState(null, '', '/reserva?code=' + encodeURIComponent(qs.get('code')));
+    } catch (ex) {
+      $('#find').classList.remove('hidden');
+      $('#res').innerHTML = `<div class="alert error">${esc(ex.message)}</div>`;
+    }
+  } else if (qs.get('pago') === 'cancelado') {
+    $('#res').innerHTML = `<div class="alert warn">${icon('info', 'ico-sm')}<span>No se completó el pago. Tu reserva sigue apartada hasta que venza: escribe tu apellido para intentar de nuevo o paga en la agencia.</span></div>`;
+    $('#last').focus();
+  }
+})().catch(() => {});
 </script>
 </body>
 </html>

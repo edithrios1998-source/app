@@ -112,6 +112,9 @@ async function init() {
     id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, first_name TEXT NOT NULL, last_name TEXT NOT NULL,
     birth_date TEXT NOT NULL, gender TEXT, nationality TEXT NOT NULL, doc_type TEXT NOT NULL, doc_number TEXT NOT NULL,
     ticket_number TEXT)`);
+  for (const col of ['payment_method TEXT', 'payment_ref TEXT', 'paid_at TIMESTAMPTZ', 'stripe_session_id TEXT']) {
+    await query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ' + col);
+  }
   await query(`CREATE TABLE IF NOT EXISTS booking_events (
     id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, status TEXT NOT NULL, note TEXT, user_name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);

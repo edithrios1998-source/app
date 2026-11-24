@@ -90,6 +90,30 @@ function flightHtml(f, pax) {
   </div>`;
 }
 
+// Recuadro "Pagar ahora" (Stripe). lastName autoriza el pago sin pedir de nuevo los datos.
+function payBoxHtml(b) {
+  if (!window.ONLINE_PAY || b.status !== 'pendiente_pago') return '';
+  return `<div class="paybox no-print" id="paybox">
+    <div><h3>${icon('card')} Paga ahora con tarjeta y recibe tus boletos al instante</h3>
+      <p>Total <b>${usd(b.total)} USD</b>. El pago se hace en la página segura de Stripe; no guardamos los datos de tu tarjeta.</p>
+      <div class="cards"><span>VISA</span><span>MASTERCARD</span><span>AMEX</span></div></div>
+    <button class="accent" id="paynow" type="button">Pagar ${usd(b.total)}</button>
+    <div class="alert error hidden" id="payerr" style="grid-column:1/-1;margin:0"></div>
+  </div>`;
+}
+function bindPayBox(b, lastName) {
+  const btn = $('#paynow');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    hideMsg($('#payerr'));
+    btn.disabled = true; btn.textContent = 'Abriendo pago seguro…';
+    try {
+      const r = await api(`/api/bookings/${encodeURIComponent(b.code)}/checkout`, { method: 'POST', body: { last_name: lastName } });
+      location.href = r.url;
+    } catch (e) { showMsg($('#payerr'), e.message); btn.disabled = false; btn.textContent = 'Pagar ' + usd(b.total); }
+  });
+}
+
 // Boleto / itinerario de una reserva
 function bookingHtml(b, { staff = false } = {}) {
   const issued = b.status === 'emitido';
@@ -100,7 +124,10 @@ function bookingHtml(b, { staff = false } = {}) {
         <div style="font-size:1.6rem;font-weight:800;margin-top:6px">${usd(b.total)} <small style="font-size:.8rem;opacity:.8">USD</small></div></div>
     </div>`;
   const pending = b.status === 'pendiente_pago'
-    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga antes de ${dt(b.expires_at)}</b> en la agencia presentando tu código de reserva. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.</span></div>` : '';
+    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' con tarjeta en línea o' : ''} en la agencia con tu código de reserva. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.</span></div>`
+    : b.status === 'pago_revision'
+      ? `<div class="alert info">${icon('info', 'ico-sm')}<span>Recibimos tu pago, pero la reserva necesita revisión (por ejemplo, venció antes de completarse el pago). La agencia te contactará para emitir tu boleto o reembolsarte.</span></div>`
+      : b.status === 'emitido' && b.payment_method ? `<div class="alert ok">${icon('check', 'ico-sm')}<span>Pagado con <b>${esc(b.payment_method)}</b>${b.paid_at ? ' el ' + dt(b.paid_at) : ''}. Tus boletos están emitidos.</span></div>` : '';
   const segs = b.segments.map((s, i) => `
     <div class="ticket">
       <div class="ticket-main">
@@ -133,5 +160,5 @@ function bookingHtml(b, { staff = false } = {}) {
       <div class="sum-line"><span>Impuestos y cargos</span><span>${usd(b.taxes)}</span></div>
       <div class="sum-total"><span>Total USD</span><b>${usd(b.total)}</b></div>
       <div class="hint">Contacto: ${esc(b.contact_name)} · ${esc(b.contact_email)} · ${esc(b.contact_phone)}</div></div>`;
-  return head + pending + segs + pax + price + (staff ? '' : '');
+  return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + price;
 }

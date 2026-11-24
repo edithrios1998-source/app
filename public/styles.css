@@ -255,3 +255,11 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 .search-grid > * { min-width: 0; }
 .search-grid input[type=date] { min-width: 0; }
 @media (max-width: 760px) { .search-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.b-pago_revision { background: #f1e8ff; color: #6b21a8; }
+.paybox { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; background: var(--surface); border: 2px solid var(--brand-2); border-radius: 18px; padding: 18px 20px; margin-bottom: 14px; box-shadow: var(--shadow); }
+.paybox h3 { margin: 0 0 4px; font-size: 1.05rem; display: flex; gap: 8px; align-items: center; }
+.paybox p { margin: 0; color: var(--muted); font-size: .88rem; }
+.paybox .cards { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.paybox .cards span { font-size: .7rem; font-weight: 800; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--ink-2); letter-spacing: .3px; }
+.paybox button { padding: 14px 24px; font-size: 1rem; }
+@media (max-width: 760px) { .paybox { grid-template-columns: 1fr; } .paybox button { width: 100%; } }

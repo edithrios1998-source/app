@@ -6,6 +6,7 @@ const express = require('express');
 const cookieSession = require('cookie-session');
 const bcrypt = require('bcryptjs');
 const { query, init } = require('./db');
+const payments = require('./payments');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,11 +23,13 @@ const STATUS = {
   emitido: 'Boleto emitido',
   cancelado: 'Cancelada',
   vencido: 'Vencida (no se pagó a tiempo)',
+  pago_revision: 'Pagada: requiere revisión',
 };
 const DOC_TYPES = ['Pasaporte', 'INE', 'DNI', 'Cédula de identidad', 'Otro documento oficial'];
 const MAX_PAX = 9;
 
 app.set('trust proxy', 1);
+app.use('/api/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieSession({
   name: 'vl_sess', secret: process.env.SESSION_SECRET || 'dev-only-secret-change-me',
@@ -134,6 +137,7 @@ async function loadBooking(where, params) {
     contact_name: b.contact_name, contact_email: b.contact_email, contact_phone: b.contact_phone,
     pax_count: b.pax_count, subtotal: Number(b.subtotal), taxes: Number(b.taxes), total: Number(b.total),
     origin: b.origin, expires_at: b.expires_at, created_at: b.created_at, updated_at: b.updated_at,
+    payment_method: b.payment_method, payment_ref: b.payment_ref, paid_at: b.paid_at,
     segments: segs.map((s) => ({
       airline: { code: s.airline, name: al[s.airline]?.name || s.airline, color: al[s.airline]?.color || '#333' },
       flight_no: s.airline + ' ' + s.flight_no, date: s.flight_date, origin: s.origin, destination: s.destination,
@@ -153,7 +157,7 @@ async function loadBooking(where, params) {
 // Vista pública: oculta documentos completos.
 function publicBooking(b) {
   const mask = (s) => (s && s.length > 3 ? '•••' + s.slice(-3) : s);
-  return { ...b, id: undefined, events: b.events.map(({ status, label, at }) => ({ status, label, at })),
+  return { ...b, id: undefined, payment_ref: undefined, events: b.events.map(({ status, label, at }) => ({ status, label, at })),
     passengers: b.passengers.map((p) => ({ ...p, doc_number: mask(p.doc_number) })) };
 }
 
@@ -183,7 +187,7 @@ app.get('/api/auth/me', (req, res) => res.json({ user: req.session.user || null 
 // ---------- público ----------
 app.get('/api/config', wrap(async (req, res) => {
   const s = await getSettings();
-  res.json({ ...s, max_pax: MAX_PAX, doc_types: DOC_TYPES, statuses: STATUS, today: todayStr(),
+  res.json({ ...s, online_payments: payments.enabled(), max_pax: MAX_PAX, doc_types: DOC_TYPES, statuses: STATUS, today: todayStr(),
     fares: Object.entries(FARES).map(([code, f]) => ({ code, ...f })) });
 }));
 
@@ -347,6 +351,51 @@ app.get('/api/staff/bookings/:id', requireStaff, wrap(async (req, res) => {
   res.json(b);
 }));
 
+// Emite los boletos de una reserva pagada (idempotente).
+async function issueBooking(bookingId, { method, ref, userName, note }) {
+  const { rows } = await query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+  const b = rows[0];
+  if (!b) throw new HttpError(404, 'Reserva no encontrada.');
+  if (b.status === 'emitido' || b.status === 'pago_revision') return b.status;
+  const { rows: pax } = await query('SELECT id, ticket_number FROM passengers WHERE booking_id = $1 ORDER BY id', [b.id]);
+  for (const p of pax) {
+    if (!p.ticket_number) await query('UPDATE passengers SET ticket_number = $1 WHERE id = $2', ['0' + String(crypto.randomInt(100000000, 999999999)) + String(crypto.randomInt(1000, 9999)), p.id]);
+  }
+  await query("UPDATE bookings SET status = 'emitido', payment_method = $1, payment_ref = $2, paid_at = NOW(), updated_at = NOW() WHERE id = $3", [method, ref || null, b.id]);
+  await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
+    [b.id, 'emitido', `Pago recibido: ${method}. ${note || ''}`.trim(), userName || null]);
+  return 'emitido';
+}
+
+// Pago en línea confirmado por Stripe: valida el monto y emite. Si la reserva ya no está vigente
+// (cancelada, o vencida y sin asientos), la marca para revisión y reembolso manual.
+async function settleOnlinePayment(session) {
+  const code = session?.metadata?.booking_code || session?.client_reference_id;
+  if (!code || session.payment_status !== 'paid') return null;
+  const { rows } = await query('SELECT * FROM bookings WHERE code = $1', [code]);
+  const b = rows[0];
+  if (!b) return null;
+  const ref = session.payment_intent || session.id;
+  if (b.status === 'emitido' || b.status === 'pago_revision') return b.status;
+  const expected = Math.round(Number(b.total) * 100);
+  let problem = null;
+  if (Number(session.amount_total) !== expected) problem = `Monto pagado (${session.amount_total / 100}) distinto al total.`;
+  else if (b.status === 'cancelado') problem = 'La reserva estaba cancelada al recibir el pago.';
+  else if (b.status === 'vencido') {
+    const { rows: segs } = await query('SELECT route_id, flight_date FROM segments WHERE booking_id = $1', [b.id]);
+    for (const sg of segs) {
+      const { rows: r } = await query('SELECT seats FROM routes WHERE id = $1', [sg.route_id]);
+      if (!r[0] || r[0].seats - (await seatsTaken(sg.route_id, sg.flight_date)) < b.pax_count) { problem = 'La reserva venció y ya no hay asientos suficientes.'; break; }
+    }
+  }
+  if (problem) {
+    await query("UPDATE bookings SET status = 'pago_revision', payment_method = $1, payment_ref = $2, paid_at = NOW(), updated_at = NOW() WHERE id = $3", ['Tarjeta en línea (Stripe)', ref, b.id]);
+    await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pago_revision', problem + ' Revisar y reembolsar desde Stripe si aplica.']);
+    return 'pago_revision';
+  }
+  return issueBooking(b.id, { method: 'Tarjeta en línea (Stripe)', ref, note: 'Ref. ' + ref });
+}
+
 app.post('/api/staff/bookings/:id/issue', requireStaff, wrap(async (req, res) => {
   await expireOld();
   const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
@@ -354,24 +403,72 @@ app.post('/api/staff/bookings/:id/issue', requireStaff, wrap(async (req, res) =>
   if (b.status !== 'pendiente_pago') throw new HttpError(400, `No se puede emitir: la reserva está "${b.status_label}".`);
   const method = str(req.body.payment_method, 40);
   if (!['Efectivo', 'Tarjeta en terminal', 'Transferencia'].includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
-  const { rows: pax } = await query('SELECT id FROM passengers WHERE booking_id = $1 ORDER BY id', [b.id]);
-  for (const p of pax) {
-    await query('UPDATE passengers SET ticket_number = $1 WHERE id = $2', ['0' + String(crypto.randomInt(100000000, 999999999)) + String(crypto.randomInt(1000, 9999)), p.id]);
-  }
-  await query("UPDATE bookings SET status = 'emitido', updated_at = NOW() WHERE id = $1", [b.id]);
-  await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
-    [b.id, 'emitido', `Pago recibido: ${method}. ${str(req.body.note, 200)}`.trim(), req.session.user.name]);
+  await issueBooking(b.id, { method, userName: req.session.user.name, note: str(req.body.note, 200) });
   res.json(await loadBooking('id = $1', [b.id]));
+}));
+
+// ---------- pago en línea ----------
+const baseUrl = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+
+app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
+  if (!payments.enabled()) throw new HttpError(503, 'El pago en línea no está disponible por ahora. Paga en la agencia.');
+  await expireOld();
+  const code = str(req.params.code, 10).toUpperCase();
+  const b = await loadBooking('code = $1', [code]);
+  const last = norm(req.body.last_name);
+  if (!b || !last || !b.passengers.some((p) => norm(p.last_name) === last || norm(p.last_name).split(/\s+/).includes(last))) {
+    throw new HttpError(404, 'No encontramos la reserva.');
+  }
+  if (b.status !== 'pendiente_pago') throw new HttpError(400, `Esta reserva está "${b.status_label}" y no se puede pagar.`);
+  // Stripe exige que la sesión expire entre 30 min y 24 h.
+  const exp = new Date(Math.max(Date.now() + 31 * 60 * 1000, Math.min(new Date(b.expires_at).getTime(), Date.now() + 23.5 * 3600 * 1000)));
+  const desc = b.segments.map((sg) => `${sg.flight_no} ${sg.origin}-${sg.destination} ${sg.date}`).join(' / ') + ` · ${b.pax_count} pasajero(s)`;
+  const base = baseUrl(req);
+  const session = await payments.createCheckout({
+    booking: b, description: desc, expiresAt: exp,
+    successUrl: `${base}/reserva?code=${b.code}&session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl: `${base}/reserva?code=${b.code}&pago=cancelado`,
+  });
+  await query('UPDATE bookings SET stripe_session_id = $1 WHERE id = $2', [session.id, b.id]);
+  await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pendiente_pago', 'El cliente inició el pago en línea']);
+  res.json({ url: session.url });
+}));
+
+// Regreso desde Stripe: se verifica el pago directamente con Stripe antes de emitir.
+app.post('/api/payments/confirm', wrap(async (req, res) => {
+  if (!payments.enabled()) throw new HttpError(503, 'Pago en línea no disponible.');
+  const sid = str(req.body.session_id, 200);
+  const code = str(req.body.code, 10).toUpperCase();
+  if (!/^cs_[A-Za-z0-9_]+$/.test(sid)) throw new HttpError(400, 'Sesión de pago inválida.');
+  const { rows } = await query('SELECT stripe_session_id FROM bookings WHERE code = $1', [code]);
+  if (!rows[0] || rows[0].stripe_session_id !== sid) throw new HttpError(404, 'No encontramos ese pago.');
+  const session = await payments.getCheckout(sid);
+  if (session.payment_status === 'paid') await settleOnlinePayment(session);
+  const b = await loadBooking('code = $1', [code]);
+  res.json({ paid: session.payment_status === 'paid', booking: publicBooking(b) });
+}));
+
+app.post('/api/stripe/webhook', wrap(async (req, res) => {
+  const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
+  if (!payments.verifyWebhook(raw, req.get('stripe-signature'), process.env.STRIPE_WEBHOOK_SECRET)) {
+    return res.status(400).send('Firma inválida');
+  }
+  const event = JSON.parse(raw);
+  if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
+    await settleOnlinePayment(event.data.object);
+  }
+  res.json({ received: true });
 }));
 
 app.post('/api/staff/bookings/:id/cancel', requireStaff, wrap(async (req, res) => {
   const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
   if (!b) throw new HttpError(404, 'Reserva no encontrada.');
   const admin = req.session.user.role === 'admin';
-  if (b.status === 'pendiente_pago' || (b.status === 'emitido' && admin)) {
+  if (b.status === 'pendiente_pago' || ((b.status === 'emitido' || b.status === 'pago_revision') && admin)) {
     await query("UPDATE bookings SET status = 'cancelado', updated_at = NOW() WHERE id = $1", [b.id]);
+    const refundNote = b.payment_method === 'Tarjeta en línea (Stripe)' ? 'Pagada en línea: emitir el reembolso desde el panel de Stripe.' : null;
     await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
-      [b.id, 'cancelado', str(req.body.note, 200) || null, req.session.user.name]);
+      [b.id, 'cancelado', [str(req.body.note, 200), refundNote].filter(Boolean).join(' ') || null, req.session.user.name]);
     return res.json({ ok: true });
   }
   throw new HttpError(400, b.status === 'emitido' ? 'Solo un administrador puede cancelar un boleto emitido.' : 'Esta reserva ya no se puede cancelar.');
@@ -508,6 +605,7 @@ app.get('/healthz', (req, res) => res.send('ok'));
 app.use('/api', (req, res) => res.status(404).json({ error: 'No encontrado.' }));
 app.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.code).json({ error: err.message });
+  if (err.stripe) { console.error('Stripe:', err.message); return res.status(502).json({ error: 'No se pudo conectar con el procesador de pagos. Intenta de nuevo o paga en la agencia.' }); }
   console.error(err);
   res.status(500).json({ error: 'Error interno. Intenta de nuevo.' });
 });
