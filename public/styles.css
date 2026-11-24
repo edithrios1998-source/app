@@ -295,3 +295,4 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 .seg-tabs button.on { border-color: var(--brand-2); background: var(--brand-soft); color: var(--brand); }
 @media (max-width: 860px) { .seat-wrap { grid-template-columns: 1fr; } .seat-side { position: static; } .cabin { max-height: 400px; } }
 @media (max-width: 860px) { .seat-side { order: -1; } .seat-wrap > div:first-child { order: 0; } }
+.logo img { width: 36px; height: 36px; border-radius: 10px; display: block; }

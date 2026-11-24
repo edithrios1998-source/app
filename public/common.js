@@ -33,7 +33,7 @@ function renderHeader(active) {
   const h = document.createElement('header');
   h.className = 'top';
   h.innerHTML = `<div class="wrap">
-    <a class="logo" href="/"><span class="logo-mark">${icon('plane', 'ico-sm')}</span><span>Vuela<b>Latino</b></span></a>
+    <a class="logo" href="/" aria-label="VuelaLatino, inicio"><img src="/favicon.svg" alt="" width="36" height="36"><span>Vuela<b>Latino</b></span></a>
     <nav class="main" id="mainnav">${links.map(([href, t]) => `<a href="${href}" class="${active === href ? 'on' : ''}">${t}</a>`).join('')}</nav>
     <button class="secondary small menu-btn" id="menubtn" aria-label="Menú">${icon('menu', 'ico-sm')}</button>
   </div>`;
