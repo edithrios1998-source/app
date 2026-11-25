@@ -29,7 +29,7 @@ const P = {
 const icon = (n, cls = 'ico') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
 
 function renderHeader(active) {
-  const links = [['/', 'Vuelos'], ['/reserva', 'Mi reserva'], ['/personal', 'Agencia']];
+  const links = [['/', 'Vuelos'], ['/reserva', 'Mi reserva'], ['/cita', 'Agendar cita'], ['/personal', 'Agencia']];
   const h = document.createElement('header');
   h.className = 'top';
   h.innerHTML = `<div class="wrap">
@@ -93,25 +93,61 @@ function flightHtml(f, pax) {
 // Recuadro "Pagar ahora" (Stripe). lastName autoriza el pago sin pedir de nuevo los datos.
 function payBoxHtml(b) {
   if (!window.ONLINE_PAY || b.status !== 'pendiente_pago') return '';
+  const bal = b.balance ?? b.total, dep = b.deposit, part = b.paid_amount > 0;
   return `<div class="paybox no-print" id="paybox">
-    <div><h3>${icon('card')} Paga ahora con tarjeta y recibe tus boletos al instante</h3>
-      <p>Total <b>${usd(b.total)} USD</b>. El pago se hace en la página segura de Stripe; no guardamos los datos de tu tarjeta.</p>
+    <div><h3>${icon('card')} ${part ? 'Paga tu saldo o haz otro abono con tarjeta' : 'Paga ahora con tarjeta y recibe tus boletos al instante'}</h3>
+      <p>${part ? `Saldo <b>${usd(bal)} USD</b>` : `Total <b>${usd(b.total)} USD</b>`}. El pago se hace en la página segura de Stripe; no guardamos los datos de tu tarjeta.</p>
+      ${dep && dep.allowed ? `<div class="pay-opts">
+        <label class="check"><input type="radio" name="paymode" value="full" checked> <span>Pagar ${part ? 'el saldo' : 'el total'}: <b>${usd(bal)}</b> y emitir mis boletos</span></label>
+        <label class="check"><input type="radio" name="paymode" value="part"> <span>${part ? 'Hacer un abono' : `Apartar con anticipo (desde ${usd(dep.min)})`}: <input id="payamt" type="number" step="0.01" min="${dep.min}" max="${bal}" value="${dep.min}" aria-label="Monto a pagar"> USD</span></label>
+        <p class="hint" style="margin:0">Con anticipo tu reserva queda apartada; liquida el resto antes del <b>${esc(dLong(dep.deadline))}</b> (${dep.days} días antes del vuelo).</p>
+      </div>` : ''}
       <div class="cards"><span>VISA</span><span>MASTERCARD</span><span>AMEX</span></div></div>
-    <button class="accent" id="paynow" type="button">Pagar ${usd(b.total)}</button>
+    <button class="accent" id="paynow" type="button">Pagar ${usd(bal)}</button>
     <div class="alert error hidden" id="payerr" style="grid-column:1/-1;margin:0"></div>
   </div>`;
 }
 function bindPayBox(b, lastName) {
   const btn = $('#paynow');
   if (!btn) return;
+  const bal = b.balance ?? b.total;
+  const amount = () => ($('input[name=paymode]:checked')?.value === 'part' ? Number($('#payamt').value) : bal);
+  const label = () => { btn.textContent = 'Pagar ' + usd(amount() || 0); };
+  $$('input[name=paymode]').forEach((r) => r.addEventListener('change', label));
+  if ($('#payamt')) $('#payamt').addEventListener('input', () => { $('input[name=paymode][value=part]').checked = true; label(); });
   btn.addEventListener('click', async () => {
     hideMsg($('#payerr'));
     btn.disabled = true; btn.textContent = 'Abriendo pago seguro…';
     try {
-      const r = await api(`/api/bookings/${encodeURIComponent(b.code)}/checkout`, { method: 'POST', body: { last_name: lastName } });
+      const r = await api(`/api/bookings/${encodeURIComponent(b.code)}/checkout`, { method: 'POST', body: { last_name: lastName, amount: amount() } });
       location.href = r.url;
-    } catch (e) { showMsg($('#payerr'), e.message); btn.disabled = false; btn.textContent = 'Pagar ' + usd(b.total); }
+    } catch (e) { showMsg($('#payerr'), e.message); btn.disabled = false; label(); }
   });
+}
+
+// ----- Calendario mensual (precios y agencia) -----
+const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const monthTitle = (m) => { const [y, mo] = m.split('-').map(Number); return MONTHS[mo - 1] + ' ' + y; };
+const shiftMonth = (m, n) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7); };
+// cell(fecha) devuelve el contenido de cada día. Semana de lunes a domingo.
+function monthGridHtml(m, cell) {
+  const [y, mo] = m.split('-').map(Number);
+  const lead = (new Date(Date.UTC(y, mo - 1, 1)).getUTCDay() + 6) % 7;
+  const n = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  let cells = '<span class="mcal-pad"></span>'.repeat(lead);
+  for (let d = 1; d <= n; d++) cells += cell(`${m}-${String(d).padStart(2, '0')}`, d);
+  return `<div class="mcal"><div class="mcal-g mcal-h">${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((x) => `<span>${x}</span>`).join('')}</div><div class="mcal-g">${cells}</div></div>`;
+}
+
+// Pagos recibidos de una reserva
+function paymentsHtml(b, { staff = false } = {}) {
+  if (!b.payments || !b.payments.length) return '';
+  return `<div class="card" style="margin-bottom:14px"><h2>Pagos</h2><div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Forma de pago</th>${staff ? '<th>Registró / referencia</th>' : ''}<th style="text-align:right">Monto</th></tr></thead>
+    <tbody>${b.payments.map((p) => `<tr><td class="small-txt">${dt(p.at)}</td><td>${esc(p.method)}${staff && p.note ? `<div class="muted small-txt">${esc(p.note)}</div>` : ''}</td>
+      ${staff ? `<td class="small-txt">${esc(p.user_name || 'En línea')}${p.ref ? `<div class="muted">${esc(p.ref)}</div>` : ''}</td>` : ''}<td style="text-align:right"><b>${usd(p.amount)}</b></td></tr>`).join('')}</tbody></table></div>
+    <div class="sum-line"><span>Pagado</span><b>${usd(b.paid_amount)}</b></div>
+    ${b.status === 'pendiente_pago' ? `<div class="sum-total"><span>Saldo por pagar</span><b>${usd(b.balance)}</b></div>` : ''}</div>`;
 }
 
 // ----- Mapa de asientos -----
@@ -261,10 +297,14 @@ function bookingHtml(b, { staff = false } = {}) {
       <div><div class="lbl">Código de reserva</div><div class="code">${esc(b.code)}</div>
         <div class="small-txt" style="opacity:.85">Creada ${dt(b.created_at)} · ${b.pax_count} pasajero${b.pax_count > 1 ? 's' : ''}</div></div>
       <div style="text-align:right"><span class="badge b-${esc(b.status)}" style="font-size:.85rem">${esc(b.status_label)}</span>
-        <div style="font-size:1.6rem;font-weight:800;margin-top:6px">${usd(b.total)} <small style="font-size:.8rem;opacity:.8">USD</small></div></div>
+        <div style="font-size:1.6rem;font-weight:800;margin-top:6px">${usd(b.total)} <small style="font-size:.8rem;opacity:.8">USD</small></div>
+        ${b.status === 'pendiente_pago' && b.paid_amount > 0 ? `<div class="small-txt" style="opacity:.9">Saldo: <b>${usd(b.balance)}</b></div>` : ''}</div>
     </div>`;
-  const pending = b.status === 'pendiente_pago'
-    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' con tarjeta en línea o' : ''} en la agencia con tu código de reserva. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.</span></div>`
+  const dep = b.deposit;
+  const pending = b.status === 'pendiente_pago' && b.paid_amount > 0
+    ? `<div class="alert info">${icon('clock', 'ico-sm')}<span>Llevas pagado <b>${usd(b.paid_amount)}</b> de ${usd(b.total)}. <b>Liquida el saldo de ${usd(b.balance)} USD antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' en línea o' : ''} en la agencia; puedes hacerlo en varios abonos. Al completar el pago se emiten tus boletos.</span></div>`
+    : b.status === 'pendiente_pago'
+    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' con tarjeta en línea o' : ''} en la agencia con tu código de reserva. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.${dep && dep.allowed ? ` <br><b>¿Prefieres pagar en abonos?</b> Aparta con un anticipo desde ${usd(dep.min)} (${Math.round(dep.pct * 100)} %) y liquida el resto antes del ${esc(dLong(dep.deadline))}.` : ''}</span></div>`
     : b.status === 'pago_revision'
       ? `<div class="alert info">${icon('info', 'ico-sm')}<span>Recibimos tu pago, pero la reserva necesita revisión (por ejemplo, venció antes de completarse el pago). La agencia te contactará para emitir tu boleto o reembolsarte.</span></div>`
       : b.status === 'emitido' && b.payment_method ? `<div class="alert ok">${icon('check', 'ico-sm')}<span>Pagado con <b>${esc(b.payment_method)}</b>${b.paid_at ? ' el ' + dt(b.paid_at) : ''}. Tus boletos están emitidos.</span></div>` : '';
@@ -301,5 +341,5 @@ function bookingHtml(b, { staff = false } = {}) {
       ${b.seats_total ? `<div class="sum-line"><span>Selección de asientos</span><span>${usd(b.seats_total)}</span></div>` : ''}
       <div class="sum-total"><span>Total USD</span><b>${usd(b.total)}</b></div>
       <div class="hint">Contacto: ${esc(b.contact_name)} · ${esc(b.contact_email)} · ${esc(b.contact_phone)}</div></div>`;
-  return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + correctionsHtml(b) + price;
+  return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + correctionsHtml(b) + paymentsHtml(b, { staff }) + price;
 }

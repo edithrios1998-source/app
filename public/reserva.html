@@ -34,7 +34,12 @@ if (qs.get('code')) $('#code').value = qs.get('code');
 function render(b, lastName, banner = '') {
   const canFix = lastName && ['pendiente_pago', 'emitido'].includes(b.status);
   const future = b.segments.some((s) => s.date >= new Date().toISOString().slice(0, 10));
-  $('#res').innerHTML = banner + bookingHtml(b) + (canFix && future ? `
+  $('#res').innerHTML = banner + bookingHtml(b) + (b.status === 'pendiente_pago' ? `
+    <div class="card no-print" style="margin-top:14px">
+      <div class="modal-head" style="flex-wrap:wrap"><div><h2>¿Vas a pagar en la agencia?</h2>
+        <p class="muted small-txt" style="margin:0">Agenda una cita y te atendemos sin filas para tu pago o abono.</p></div>
+        <a class="btn secondary" href="/cita?motivo=pago&code=${encodeURIComponent(b.code)}">Agendar cita</a></div>
+    </div>` : '') + (canFix && future ? `
     <div class="card no-print" style="margin-top:14px">
       <div class="modal-head" style="flex-wrap:wrap"><div><h2>Tus asientos</h2>
         <p class="muted small-txt" style="margin:0">${b.status === 'emitido' ? 'Puedes cambiar a asientos sin costo adicional. Los asientos con costo extra se compran en la agencia.' : 'Elige o cambia tus asientos. Si tienen costo, se suma al total de tu reserva.'}</p></div>

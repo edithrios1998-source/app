@@ -69,6 +69,8 @@
       <div class="leg-tabs" id="legs"></div>
     </div>
     <div class="date-strip" id="dates"></div>
+    <div class="pcal-bar"><button type="button" class="ghost small" id="pcal-btn"></button></div>
+    <div class="card pcal hidden" id="pcal"></div>
     <div id="flights"></div>
   </section>
 
@@ -116,7 +118,7 @@
     <section class="section">
       <div class="perks">
         <div class="perk"><span class="ib"></span><div><b>Precio total claro</b><span>Impuestos y cargos incluidos antes de reservar.</span></div></div>
-        <div class="perk"><span class="ib"></span><div><b>Aparta sin pagar en línea</b><span>Reserva hoy y paga en la agencia dentro del plazo.</span></div></div>
+        <div class="perk"><span class="ib"></span><div><b>Paga en abonos</b><span>Aparta con un anticipo y liquida antes de tu vuelo, en línea o en la agencia.</span></div></div>
         <div class="perk"><span class="ib"></span><div><b>Consulta tu reserva</b><span>Con tu código y apellido, cuando quieras.</span></div></div>
       </div>
     </section>
@@ -225,6 +227,9 @@ async function showLeg() {
     if (S.leg === 0 && S.legs[1] && S.legs[1].date < L.date) S.legs[1].date = L.date;
     showLeg();
   }));
+  S.calMonth = L.date.slice(0, 7);
+  $('#pcal-btn').innerHTML = `${icon('clock', 'ico-sm')} ${S.calOpen ? 'Ocultar calendario de precios' : 'Ver calendario de precios del mes'}`;
+  if (S.calOpen) drawPriceCal(); else $('#pcal').classList.add('hidden');
   const box = $('#flights');
   box.innerHTML = '<div class="empty">Buscando vuelos…</div>';
   try {
@@ -253,6 +258,45 @@ async function showLeg() {
         else showCheckout();
       }));
     });
+  } catch (e) { box.innerHTML = `<div class="alert error">${esc(e.message)}</div>`; }
+}
+
+// Calendario de precios: el precio más bajo por persona (tarifa Básica) de cada día del mes.
+$('#pcal-btn').addEventListener('click', () => {
+  S.calOpen = !S.calOpen;
+  $('#pcal-btn').innerHTML = `${icon('clock', 'ico-sm')} ${S.calOpen ? 'Ocultar calendario de precios' : 'Ver calendario de precios del mes'}`;
+  if (S.calOpen) drawPriceCal(); else $('#pcal').classList.add('hidden');
+});
+async function drawPriceCal() {
+  const L = S.legs[S.leg];
+  const box = $('#pcal');
+  box.classList.remove('hidden');
+  const minDate = S.leg === 1 ? S.legs[0].date : S.cfg.today;
+  const m = S.calMonth;
+  box.innerHTML = '<div class="empty">Cargando precios…</div>';
+  try {
+    const r = await api(`/api/price-calendar?from=${L.from}&to=${L.to}&month=${m}&pax=${S.pax}`);
+    const by = Object.fromEntries(r.days.map((d) => [d.date, d]));
+    const cheap = r.min !== null ? r.min + Math.max(1, (r.max - r.min) * 0.15) : null;
+    box.innerHTML = `<div class="modal-head" style="flex-wrap:wrap;gap:8px">
+        <div><h3 style="margin:0">${esc(L.from)} → ${esc(L.to)} · ${esc(monthTitle(m))}</h3>
+          <p class="muted small-txt" style="margin:2px 0 0">Precio más bajo por persona, tarifa Básica, sin impuestos.${r.min !== null ? ` Desde <b>${usd0(r.min)}</b>.` : ''}</p></div>
+        <div style="display:flex;gap:6px"><button type="button" class="secondary small" data-mv="-1" ${m <= S.cfg.today.slice(0, 7) ? 'disabled' : ''} aria-label="Mes anterior">‹</button>
+          <button type="button" class="secondary small" data-mv="1" aria-label="Mes siguiente">›</button></div></div>
+      ${monthGridHtml(m, (d, n) => {
+        const x = by[d] || {};
+        const off = d < minDate || x.price === null || x.price === undefined;
+        return `<button type="button" class="pday ${off ? 'off' : ''} ${!off && x.price <= cheap ? 'best' : ''} ${d === L.date ? 'on' : ''}" data-d="${d}" ${off ? 'disabled' : ''}
+          aria-label="${esc(dLong(d))}${off ? ', sin vuelos' : ', desde ' + usd0(x.price)}"><span class="n">${n}</span><span class="p">${off ? (d < minDate ? '' : '—') : usd0(x.price)}</span></button>`;
+      })}
+      <div class="pcal-legend"><span><i class="best"></i> Precios más bajos del mes</span><span><i class="off"></i> Sin vuelos o sin lugares</span></div>`;
+    $$('[data-mv]', box).forEach((b) => b.addEventListener('click', () => { S.calMonth = shiftMonth(S.calMonth, Number(b.dataset.mv)); drawPriceCal(); }));
+    $$('.pday:not(:disabled)', box).forEach((b) => b.addEventListener('click', () => {
+      L.date = b.dataset.d;
+      if (S.leg === 0 && S.legs[1] && S.legs[1].date < L.date) S.legs[1].date = L.date;
+      S.calOpen = false;
+      showLeg();
+    }));
   } catch (e) { box.innerHTML = `<div class="alert error">${esc(e.message)}</div>`; }
 }
 

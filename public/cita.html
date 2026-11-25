@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agendar cita · VuelaLatino</title>
+<meta name="description" content="Agenda una cita en la agencia para pagar, hacer cambios o comprar tus boletos de avión.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="theme-color" content="#1747b8">
+</head>
+<body>
+<main class="wrap pad" style="max-width:880px">
+  <div class="card" id="form-card">
+    <h2>Agenda una cita en la agencia</h2>
+    <p class="muted small-txt" style="margin:0">Evita filas: elige el día y la hora y te atendemos en mostrador. <span id="hours"></span></p>
+    <form id="f" novalidate>
+      <label for="reason">¿Para qué es la cita? *</label>
+      <select id="reason"></select>
+      <div class="row">
+        <div><label for="date">Día *</label><input id="date" type="date"></div>
+        <div><label for="code">Código de reserva (si ya tienes)</label><input id="code" maxlength="6" placeholder="Ej. K9MG5S" style="text-transform:uppercase;letter-spacing:2px" autocomplete="off"></div>
+      </div>
+      <label>Hora *</label>
+      <div class="slots" id="slots"><div class="muted small-txt">Elige un día.</div></div>
+      <h3>Tus datos</h3>
+      <div class="row3">
+        <div><label for="name">Nombre *</label><input id="name" autocomplete="name"></div>
+        <div><label for="phone">Teléfono *</label><input id="phone" type="tel" autocomplete="tel"></div>
+        <div><label for="email">Correo</label><input id="email" type="email" autocomplete="email"></div>
+      </div>
+      <label for="notes">Comentarios (opcional)</label>
+      <textarea id="notes" rows="2" maxlength="400" placeholder="Ej. quiero cotizar un viaje a Bogotá para 3 personas en diciembre"></textarea>
+      <div class="alert error hidden" id="err"></div>
+      <button class="accent block" type="submit" id="go" style="margin-top:16px">Agendar cita</button>
+    </form>
+  </div>
+  <div id="done" class="hidden"></div>
+</main>
+<footer><div class="wrap"><span>Si no puedes asistir, llama a la agencia para cambiar tu cita.</span><span><a href="/">Buscar vuelos</a></span></div></footer>
+<script src="/common.js"></script>
+<script>
+renderHeader('/cita');
+const qs = new URLSearchParams(location.search);
+let picked = null;
+
+async function loadSlots() {
+  picked = null;
+  const d = $('#date').value;
+  if (!d) return;
+  $('#slots').innerHTML = '<div class="muted small-txt">Buscando horarios…</div>';
+  try {
+    const r = await api('/api/appointments/slots?date=' + d);
+    // Hoy: no mostrar horas que ya pasaron (hora de este dispositivo).
+    const now = new Date();
+    const local = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const hm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const slots = r.slots.filter((s) => d !== local || s.time > hm);
+    if (!r.open) { $('#slots').innerHTML = '<div class="alert warn" style="margin:0">La agencia no abre ese día. Elige de lunes a sábado.</div>'; return; }
+    if (!slots.some((s) => s.left > 0)) { $('#slots').innerHTML = '<div class="alert warn" style="margin:0">Ya no hay horarios libres ese día. Prueba otro.</div>'; return; }
+    $('#slots').innerHTML = slots.map((s) => `<button type="button" class="slot" data-t="${s.time}" ${s.left < 1 ? 'disabled title="Lleno"' : ''}>${s.time}</button>`).join('');
+    $$('#slots .slot:not(:disabled)').forEach((b) => b.addEventListener('click', () => {
+      picked = b.dataset.t;
+      $$('#slots .slot').forEach((x) => x.classList.toggle('on', x === b));
+    }));
+  } catch (e) { $('#slots').innerHTML = `<div class="alert error" style="margin:0">${esc(e.message)}</div>`; }
+}
+
+(async () => {
+  const info = await api('/api/appointments/info');
+  $('#hours').textContent = 'Horario: ' + info.hours + '.';
+  $('#reason').innerHTML = Object.entries(info.reasons).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  if (info.reasons[qs.get('motivo')]) $('#reason').value = qs.get('motivo');
+  if (qs.get('code')) $('#code').value = qs.get('code').toUpperCase();
+  $('#date').min = info.today; $('#date').max = addDays(info.today, info.max_days);
+  let d = addDays(info.today, 1);
+  while (new Date(d + 'T12:00:00Z').getUTCDay() === 0) d = addDays(d, 1);
+  $('#date').value = d;
+  loadSlots();
+})().catch((e) => showMsg($('#err'), e.message));
+$('#date').addEventListener('change', loadSlots);
+
+$('#f').addEventListener('submit', async (e) => {
+  e.preventDefault(); hideMsg($('#err'));
+  if (!picked) return showMsg($('#err'), 'Elige una hora.');
+  const btn = $('#go'); btn.disabled = true;
+  try {
+    const r = await api('/api/appointments', { method: 'POST', body: {
+      reason: $('#reason').value, date: $('#date').value, time: picked, booking_code: $('#code').value.trim(),
+      name: $('#name').value, phone: $('#phone').value, email: $('#email').value, notes: $('#notes').value } });
+    $('#form-card').classList.add('hidden');
+    $('#done').classList.remove('hidden');
+    $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Cita registrada!</b> La agencia la confirmará por teléfono.</span></div>
+      <div class="card appt-ok"><div class="lbl muted small-txt">Folio de tu cita</div><div class="code">${esc(r.code)}</div>
+        <div class="kv" style="margin-top:12px">
+          <div><span>Día</span><b>${esc(dLong(r.date))}</b></div><div><span>Hora</span><b>${esc(r.time)}</b></div>
+          <div><span>Motivo</span><b>${esc(r.reason_label)}</b></div><div><span>Estado</span><b>${esc(r.status_label)}</b></div>
+        </div>
+        <p class="hint">Llega 5 minutos antes${$('#code').value ? ' con tu código de reserva' : ''} y una identificación. Guarda o imprime esta página.</p>
+        <div class="row no-print" style="max-width:420px"><button class="secondary" onclick="window.print()">Imprimir</button><a class="btn" href="/">Buscar vuelos</a></div></div>`;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (ex) { showMsg($('#err'), ex.message); if (/llenar/.test(ex.message)) loadSlots(); }
+  finally { btn.disabled = false; }
+});
+</script>
+</body>
+</html>

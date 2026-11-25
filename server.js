@@ -60,7 +60,18 @@ async function getSettings() {
   const { rows } = await query('SELECT key, value FROM settings');
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee),
-    seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20) };
+    seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20),
+    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15), appt_capacity: Number(s.appt_capacity ?? 2) };
+}
+
+// Pago en abonos: con un anticipo la reserva se mantiene apartada hasta `full_pay_days` días antes del primer vuelo.
+function depositInfo(b, segs, st) {
+  if (b.status !== 'pendiente_pago' || !segs.length) return null;
+  const first = segs.map((s) => s.flight_date).sort()[0];
+  const deadline = addDays(first, -st.full_pay_days);
+  const total = Number(b.total), paid = Number(b.paid_amount || 0), balance = money(total - paid);
+  const min = Math.min(balance, paid > 0 ? 1 : money(Math.max(1, total * st.deposit_pct)));
+  return { allowed: st.deposit_pct < 1 && deadline > todayStr() && min < balance, min, deadline, pct: st.deposit_pct, days: st.full_pay_days };
 }
 
 async function airportMap() {
@@ -127,20 +138,26 @@ async function loadBooking(where, params) {
   const { rows } = await query(`SELECT * FROM bookings WHERE ${where}`, params);
   const b = rows[0];
   if (!b) return null;
-  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al, { rows: cr }, { rows: st }] = await Promise.all([
+  const [{ rows: segs }, { rows: pax }, { rows: ev }, ap, al, { rows: cr }, { rows: st }, { rows: pay }, settings] = await Promise.all([
     query('SELECT * FROM segments WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM passengers WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM booking_events WHERE booking_id = $1 ORDER BY id', [b.id]),
     airportMap(), airlineMap(),
     query('SELECT * FROM correction_requests WHERE booking_id = $1 ORDER BY id', [b.id]),
     query('SELECT * FROM seat_assignments WHERE booking_id = $1', [b.id]),
+    query('SELECT * FROM payments WHERE booking_id = $1 ORDER BY id', [b.id]),
+    getSettings(),
   ]);
+  const paid = money(b.paid_amount || 0);
   return {
     id: b.id, code: b.code, status: b.status, status_label: STATUS[b.status],
     contact_name: b.contact_name, contact_email: b.contact_email, contact_phone: b.contact_phone,
     pax_count: b.pax_count, subtotal: Number(b.subtotal), taxes: Number(b.taxes), total: Number(b.total), seats_total: Number(b.seats_total || 0),
     origin: b.origin, expires_at: b.expires_at, created_at: b.created_at, updated_at: b.updated_at,
     payment_method: b.payment_method, payment_ref: b.payment_ref, paid_at: b.paid_at,
+    paid_amount: paid, balance: money(Math.max(0, Number(b.total) - paid)),
+    payments: pay.map((p) => ({ id: p.id, amount: Number(p.amount), method: p.method, ref: p.ref, note: p.note, user_name: p.user_name, at: p.created_at })),
+    deposit: depositInfo(b, segs, settings),
     segments: segs.map((s) => ({
       id: s.id, route_id: s.route_id,
       seats: pax.map((p) => { const a = st.find((x) => x.segment_id === s.id && x.passenger_id === p.id); return a ? { seat: a.seat, type: a.seat_type, price: Number(a.price) } : null; }),
@@ -167,6 +184,7 @@ function publicBooking(b) {
   const mask = (s) => (s && s.length > 3 ? '•••' + s.slice(-3) : s);
   const isFix = (n) => /^(Datos corregidos|Solicitud de corrección|Contacto actualizado|Corrección en agencia)/.test(n || '');
   return { ...b, id: undefined, payment_ref: undefined,
+    payments: b.payments.map(({ amount, method, at }) => ({ amount, method, at })),
     events: b.events.map(({ status, label, note, at }) => (isFix(note) ? { status, label: 'Corrección de datos', note, at } : { status, label, at })),
     passengers: b.passengers.map((p) => ({ ...p, id: undefined, doc_number: mask(p.doc_number) })),
     corrections: b.corrections.map((c) => ({ ...c, resolved_by: undefined,
@@ -440,7 +458,14 @@ async function changeSeats(b, segIdx, wanted, { staff = false, userName = null }
     sel.forEach((x, i) => { if (x) x.price = Math.min(x.price, sg.seats[i]?.price ?? x.price); });
   }
   await saveSeats(b.id, sg.id, b.passengers.map((p) => p.id), sel);
-  if (!issued) await recalcSeatsTotal(b.id);
+  if (!issued) {
+    await recalcSeatsTotal(b.id);
+    // Si ya había abonos y el nuevo total quedó cubierto, se emiten los boletos.
+    const { rows: nb } = await query('SELECT total, paid_amount FROM bookings WHERE id = $1', [b.id]);
+    if (b.paid_amount > 0 && Number(nb[0].paid_amount) >= Number(nb[0].total) - 0.005) {
+      await issueBooking(b.id, { method: 'Pago en abonos', userName, note: 'El total quedó cubierto con los abonos.' });
+    }
+  }
   const txt = sel.map((x, i) => `P${i + 1}: ${x ? x.seat : 'sin asiento'}`).join(', ');
   const charge = sel.filter((x) => x && x.note).map((x) => x.seat);
   await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
@@ -641,7 +666,7 @@ app.get('/api/staff/bookings', requireStaff, wrap(async (req, res) => {
   const segs = ids.length ? (await query(`SELECT booking_id, origin, destination, flight_date, airline, flight_no FROM segments WHERE booking_id IN (${ids.join(',')}) ORDER BY id`)).rows : [];
   res.json(rows.map((b) => ({
     id: b.id, code: b.code, status: b.status, status_label: STATUS[b.status], contact_name: b.contact_name,
-    pax_count: b.pax_count, total: Number(b.total), origin: b.origin, created_at: b.created_at, expires_at: b.expires_at,
+    pax_count: b.pax_count, total: Number(b.total), paid_amount: Number(b.paid_amount || 0), origin: b.origin, created_at: b.created_at, expires_at: b.expires_at,
     segments: segs.filter((s) => s.booking_id === b.id).map((s) => ({ route: s.origin + '–' + s.destination, date: s.flight_date, flight: s.airline + ' ' + s.flight_no })),
   })));
 }));
@@ -671,6 +696,54 @@ async function issueBooking(bookingId, { method, ref, userName, note }) {
 
 // Pago en línea confirmado por Stripe: valida el monto y emite. Si la reserva ya no está vigente
 // (cancelada, o vencida y sin asientos), la marca para revisión y reembolso manual.
+const STAFF_METHODS = ['Efectivo', 'Tarjeta en terminal', 'Transferencia', 'Depósito bancario'];
+const ONLINE_METHOD = 'Tarjeta en línea (Stripe)';
+const fmt = (n) => Number(n).toFixed(2);
+
+// Guarda un pago. Devuelve false si esa referencia ya estaba registrada (aviso repetido de Stripe).
+async function insertPayment(bookingId, { amount, method, ref = null, note = null, userName = null }) {
+  if (ref && (await query('SELECT 1 FROM payments WHERE ref = $1', [ref])).rows.length) return false;
+  try {
+    await query('INSERT INTO payments (booking_id, amount, method, ref, note, user_name) VALUES ($1,$2,$3,$4,$5,$6)',
+      [bookingId, amount, method, ref, note || null, userName]);
+  } catch (e) {
+    if (e.code === '23505' || /duplicate|unique/i.test(e.message)) return false;
+    throw e;
+  }
+  await query('UPDATE bookings SET paid_amount = COALESCE(paid_amount, 0) + $1, updated_at = NOW() WHERE id = $2', [amount, bookingId]);
+  return true;
+}
+
+// Registra un pago completo o un abono. Si cubre el total, emite los boletos.
+async function recordPayment(bookingId, { amount, method, ref = null, userName = null, note = '', trusted = false }) {
+  const b = await loadBooking('id = $1', [bookingId]);
+  if (!b) throw new HttpError(404, 'Reserva no encontrada.');
+  if (b.status !== 'pendiente_pago') throw new HttpError(400, `No se puede registrar el pago: la reserva está "${b.status_label}".`);
+  amount = money(amount);
+  if (!(amount > 0)) throw new HttpError(400, 'Escribe un monto válido.');
+  if (amount > b.balance + 0.005) throw new HttpError(400, `El monto es mayor que el saldo (${fmt(b.balance)} USD).`);
+  const full = amount >= b.balance - 0.005;
+  if (!full && !trusted) {
+    if (!b.deposit?.allowed) throw new HttpError(400, `Esta reserva se paga completa (${fmt(b.balance)} USD): el vuelo sale en menos de ${b.deposit?.days ?? ''} días o ya no admite abonos.`);
+    if (amount < b.deposit.min - 0.005) throw new HttpError(400, `El ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo es ${fmt(b.deposit.min)} USD.`);
+  }
+  if (!(await insertPayment(b.id, { amount, method, ref, note, userName }))) return b.status;
+  if (full) {
+    const before = b.paid_amount > 0;
+    return issueBooking(b.id, { method: before ? 'Pago en abonos' : method, ref, userName,
+      note: before ? `Saldo liquidado: ${fmt(amount)} USD con ${method}.${note ? ' ' + note : ''}` : note });
+  }
+  const paid = money(b.paid_amount + amount);
+  if (b.deposit) {
+    const until = new Date(b.deposit.deadline + 'T23:59:00Z');
+    if (until > new Date(b.expires_at)) await query('UPDATE bookings SET expires_at = $1 WHERE id = $2', [until, b.id]);
+  }
+  await log(b, `${b.paid_amount > 0 ? 'Abono' : 'Anticipo'} recibido: ${fmt(amount)} USD (${method}). Pagado ${fmt(paid)} de ${fmt(b.total)}; saldo ${fmt(b.total - paid)} USD${b.deposit ? ' a liquidar antes del ' + b.deposit.deadline : ''}.${note ? ' ' + note : ''}`, userName);
+  return 'pendiente_pago';
+}
+
+// Pago en línea confirmado por Stripe (puede ser el total o un abono). Si la reserva ya no está vigente
+// (cancelada, o vencida y sin asientos) o el monto no cuadra, se guarda el pago y se marca para revisión.
 async function settleOnlinePayment(session) {
   const code = session?.metadata?.booking_code || session?.client_reference_id;
   if (!code || session.payment_status !== 'paid') return null;
@@ -678,10 +751,12 @@ async function settleOnlinePayment(session) {
   const b = rows[0];
   if (!b) return null;
   const ref = session.payment_intent || session.id;
-  if (b.status === 'emitido' || b.status === 'pago_revision') return b.status;
-  const expected = Math.round(Number(b.total) * 100);
+  if ((await query('SELECT 1 FROM payments WHERE ref = $1', [ref])).rows.length) return b.status;
+  const amount = money(Number(session.amount_total) / 100);
+  const balance = money(Number(b.total) - Number(b.paid_amount || 0));
   let problem = null;
-  if (Number(session.amount_total) !== expected) problem = `Monto pagado (${session.amount_total / 100}) distinto al total.`;
+  if (b.status === 'emitido' || b.status === 'pago_revision') problem = 'Se recibió un pago en línea, pero la reserva ya estaba pagada.';
+  else if (amount > balance + 0.005) problem = `Monto pagado (${fmt(amount)}) mayor que el saldo (${fmt(balance)}).`;
   else if (b.status === 'cancelado') problem = 'La reserva estaba cancelada al recibir el pago.';
   else if (b.status === 'vencido') {
     const { rows: segs } = await query('SELECT route_id, flight_date FROM segments WHERE booking_id = $1', [b.id]);
@@ -689,23 +764,36 @@ async function settleOnlinePayment(session) {
       const { rows: r } = await query('SELECT seats FROM routes WHERE id = $1', [sg.route_id]);
       if (!r[0] || r[0].seats - (await seatsTaken(sg.route_id, sg.flight_date)) < b.pax_count) { problem = 'La reserva venció y ya no hay asientos suficientes.'; break; }
     }
+    // Hay lugar: se reactiva la reserva para aplicar el pago.
+    if (!problem) await query("UPDATE bookings SET status = 'pendiente_pago', expires_at = $1 WHERE id = $2", [new Date(Date.now() + 3600 * 1000), b.id]);
   }
   if (problem) {
-    await query("UPDATE bookings SET status = 'pago_revision', payment_method = $1, payment_ref = $2, paid_at = NOW(), updated_at = NOW() WHERE id = $3", ['Tarjeta en línea (Stripe)', ref, b.id]);
-    await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pago_revision', problem + ' Revisar y reembolsar desde Stripe si aplica.']);
-    return 'pago_revision';
+    if (!(await insertPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'En revisión: ' + problem }))) return b.status;
+    const status = b.status === 'emitido' ? 'emitido' : 'pago_revision';
+    await query('UPDATE bookings SET status = $1, payment_method = COALESCE(payment_method, $2), payment_ref = COALESCE(payment_ref, $3), paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $4', [status, ONLINE_METHOD, ref, b.id]);
+    await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, status, problem + ' Revisar y reembolsar desde Stripe si aplica.']);
+    return status;
   }
-  return issueBooking(b.id, { method: 'Tarjeta en línea (Stripe)', ref, note: 'Ref. ' + ref });
+  return recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref, trusted: true });
 }
 
+// Cobro en mostrador: el total o un abono.
+app.post('/api/staff/bookings/:id/payments', requireStaff, wrap(async (req, res) => {
+  await expireOld();
+  const method = str(req.body.method, 40);
+  if (!STAFF_METHODS.includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
+  await recordPayment(Number(req.params.id) || 0, { amount: Number(req.body.amount), method, userName: req.session.user.name, note: str(req.body.note, 200) });
+  res.json(await loadBooking('id = $1', [Number(req.params.id) || 0]));
+}));
+
+// Compatibilidad: cobrar el saldo completo y emitir.
 app.post('/api/staff/bookings/:id/issue', requireStaff, wrap(async (req, res) => {
   await expireOld();
   const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
   if (!b) throw new HttpError(404, 'Reserva no encontrada.');
-  if (b.status !== 'pendiente_pago') throw new HttpError(400, `No se puede emitir: la reserva está "${b.status_label}".`);
   const method = str(req.body.payment_method, 40);
-  if (!['Efectivo', 'Tarjeta en terminal', 'Transferencia'].includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
-  await issueBooking(b.id, { method, userName: req.session.user.name, note: str(req.body.note, 200) });
+  if (!STAFF_METHODS.includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
+  await recordPayment(b.id, { amount: b.balance, method, userName: req.session.user.name, note: str(req.body.note, 200) });
   res.json(await loadBooking('id = $1', [b.id]));
 }));
 
@@ -722,17 +810,24 @@ app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
     throw new HttpError(404, 'No encontramos la reserva.');
   }
   if (b.status !== 'pendiente_pago') throw new HttpError(400, `Esta reserva está "${b.status_label}" y no se puede pagar.`);
+  // Monto: el saldo completo o un abono (si la reserva lo permite).
+  const amount = req.body.amount === undefined || req.body.amount === null || req.body.amount === '' ? b.balance : money(req.body.amount);
+  if (!(amount > 0) || amount > b.balance + 0.005) throw new HttpError(400, `El monto debe estar entre 1 y ${fmt(b.balance)} USD.`);
+  if (amount < b.balance - 0.005) {
+    if (!b.deposit?.allowed) throw new HttpError(400, 'Esta reserva se paga completa.');
+    if (amount < b.deposit.min - 0.005) throw new HttpError(400, `El ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo es ${fmt(b.deposit.min)} USD.`);
+  }
   // Stripe exige que la sesión expire entre 30 min y 24 h.
   const exp = new Date(Math.max(Date.now() + 31 * 60 * 1000, Math.min(new Date(b.expires_at).getTime(), Date.now() + 23.5 * 3600 * 1000)));
   const desc = b.segments.map((sg) => `${sg.flight_no} ${sg.origin}-${sg.destination} ${sg.date}`).join(' / ') + ` · ${b.pax_count} pasajero(s)`;
   const base = baseUrl(req);
   const session = await payments.createCheckout({
-    booking: b, description: desc, expiresAt: exp,
+    booking: b, amount, description: (amount < b.balance - 0.005 ? 'Abono · ' : '') + desc, expiresAt: exp,
     successUrl: `${base}/reserva?code=${b.code}&session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}/reserva?code=${b.code}&pago=cancelado`,
   });
   await query('UPDATE bookings SET stripe_session_id = $1 WHERE id = $2', [session.id, b.id]);
-  await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pendiente_pago', 'El cliente inició el pago en línea']);
+  await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pendiente_pago', `El cliente inició el pago en línea (${fmt(amount)} USD)`]);
   res.json({ url: session.url });
 }));
 
@@ -766,9 +861,17 @@ app.post('/api/staff/bookings/:id/cancel', requireStaff, wrap(async (req, res) =
   const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
   if (!b) throw new HttpError(404, 'Reserva no encontrada.');
   const admin = req.session.user.role === 'admin';
-  if (b.status === 'pendiente_pago' || ((b.status === 'emitido' || b.status === 'pago_revision') && admin)) {
+  // Con dinero recibido (boleto emitido, en revisión, o abonos) solo cancela un administrador.
+  const withMoney = b.paid_amount > 0 || ['emitido', 'pago_revision'].includes(b.status);
+  if (withMoney && !admin && ['pendiente_pago', 'emitido', 'pago_revision', 'vencido'].includes(b.status)) {
+    throw new HttpError(400, b.status === 'emitido' ? 'Solo un administrador puede cancelar un boleto emitido.' : 'Esta reserva ya tiene pagos: solo un administrador puede cancelarla.');
+  }
+  if (['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status) || (b.status === 'vencido' && b.paid_amount > 0)) {
     await query("UPDATE bookings SET status = 'cancelado', updated_at = NOW() WHERE id = $1", [b.id]);
-    const refundNote = b.payment_method === 'Tarjeta en línea (Stripe)' ? 'Pagada en línea: emitir el reembolso desde el panel de Stripe.' : null;
+    const online = b.payments.filter((p) => p.method === ONLINE_METHOD).reduce((t, p) => t + p.amount, 0);
+    const refundNote = b.paid_amount > 0
+      ? `Se habían recibido ${fmt(b.paid_amount)} USD: reembolsar o aplicar según la política${online ? ` (${fmt(online)} USD en línea: reembolsar desde el panel de Stripe)` : ''}.`
+      : null;
     await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
       [b.id, 'cancelado', [str(req.body.note, 200), refundNote].filter(Boolean).join(' ') || null, req.session.user.name]);
     return res.json({ ok: true });
@@ -780,6 +883,273 @@ app.get('/api/staff/stats', requireStaff, wrap(async (req, res) => {
   await expireOld();
   const { rows } = await query('SELECT status, COUNT(*)::int AS n, COALESCE(SUM(total),0) AS total, COALESCE(SUM(pax_count),0) AS pax FROM bookings GROUP BY status');
   res.json(rows.map((r) => ({ status: r.status, label: STATUS[r.status], n: Number(r.n), total: Number(r.total), pax: Number(r.pax) })));
+}));
+
+// ---------- calendario de precios (público) ----------
+const monthRange = (m) => {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m || '')) throw new HttpError(400, 'Mes inválido (AAAA-MM).');
+  const first = m + '-01';
+  const [y, mo] = m.split('-').map(Number);
+  const last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+  return { first, last };
+};
+
+app.get('/api/price-calendar', wrap(async (req, res) => {
+  const from = str(req.query.from, 3).toUpperCase(), to = str(req.query.to, 3).toUpperCase();
+  const pax = Math.min(MAX_PAX, Math.max(1, Number(req.query.pax) || 1));
+  const { first, last } = monthRange(str(req.query.month, 7));
+  const start = first < todayStr() ? todayStr() : first;
+  const end = [last, addDays(todayStr(), 330)].sort()[0];
+  await expireOld();
+  const { rows: routes } = await query(
+    `SELECT r.* FROM routes r JOIN airlines a ON a.code = r.airline
+     WHERE r.active = TRUE AND a.active = TRUE AND r.origin = $1 AND r.destination = $2`, [from, to]);
+  const taken = {};
+  if (routes.length && start <= end) {
+    const { rows } = await query(
+      `SELECT s.route_id, s.flight_date, SUM(b.pax_count) AS n FROM segments s JOIN bookings b ON b.id = s.booking_id
+       WHERE s.route_id IN (${routes.map((r) => Number(r.id)).join(',')}) AND s.flight_date >= $1 AND s.flight_date <= $2
+         AND (b.status IN ('emitido', 'pago_revision') OR (b.status = 'pendiente_pago' AND b.expires_at > NOW()))
+       GROUP BY s.route_id, s.flight_date`, [start, end]);
+    for (const r of rows) taken[r.route_id + '|' + r.flight_date] = Number(r.n);
+  }
+  const days = [];
+  for (let d = first; d <= last; d = addDays(d, 1)) {
+    if (d < start || d > end) { days.push({ date: d, price: null, flights: 0, past: d < start }); continue; }
+    const wd = String(weekday(d));
+    const ok = routes.filter((r) => r.days.includes(wd) && r.seats - (taken[r.id + '|' + d] || 0) >= pax);
+    days.push({ date: d, flights: ok.length, price: ok.length ? Math.min(...ok.map((r) => farePrice(r.base_price, 'basica', d))) : null });
+  }
+  const prices = days.map((x) => x.price).filter((p) => p !== null);
+  res.json({ month: first.slice(0, 7), days, min: prices.length ? Math.min(...prices) : null, max: prices.length ? Math.max(...prices) : null, has_route: routes.length > 0 });
+}));
+
+// ---------- pagos (personal) ----------
+app.get('/api/staff/payments', requireStaff, wrap(async (req, res) => {
+  await expireOld();
+  const today = todayStr();
+  const from = isDate(req.query.from) ? req.query.from : addDays(today, -30);
+  const to = isDate(req.query.to) ? req.query.to : today;
+  const method = str(req.query.method, 40);
+  const params = [new Date(from + 'T00:00:00Z'), new Date(addDays(to, 1) + 'T00:00:00Z')];
+  let extra = '';
+  if (method) { params.push(method); extra = ' AND p.method = $3'; }
+  const { rows } = await query(
+    `SELECT p.*, b.code, b.contact_name, b.status FROM payments p JOIN bookings b ON b.id = p.booking_id
+     WHERE p.created_at >= $1 AND p.created_at < $2${extra} ORDER BY p.created_at DESC LIMIT 1000`, params);
+  const list = rows.map((p) => ({ id: p.id, at: p.created_at, amount: Number(p.amount), method: p.method, ref: p.ref, note: p.note, user_name: p.user_name,
+    booking_id: p.booking_id, code: p.code, contact_name: p.contact_name, status: p.status, status_label: STATUS[p.status] }));
+  const byMethod = {};
+  for (const p of list) { const m = (byMethod[p.method] = byMethod[p.method] || { method: p.method, n: 0, total: 0 }); m.n++; m.total = money(m.total + p.amount); }
+  // Resumen: hoy, semana (desde el lunes) y mes en curso.
+  const monday = addDays(today, 1 - weekday(today));
+  const { rows: sum } = await query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN created_at >= $1 THEN amount ELSE 0 END), 0) AS day,
+       COALESCE(SUM(CASE WHEN created_at >= $2 THEN amount ELSE 0 END), 0) AS week,
+       COALESCE(SUM(amount), 0) AS month
+     FROM payments WHERE created_at >= $3`,
+    [new Date(today + 'T00:00:00Z'), new Date(monday + 'T00:00:00Z'), new Date([today.slice(0, 7) + '-01', monday].sort()[0] + 'T00:00:00Z')]);
+  const { rows: monthRows } = await query('SELECT COALESCE(SUM(amount), 0) AS t FROM payments WHERE created_at >= $1', [new Date(today.slice(0, 7) + '-01T00:00:00Z')]);
+  const { rows: bal } = await query(
+    `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
+     WHERE status = 'pendiente_pago' AND paid_amount > 0 ORDER BY expires_at`);
+  const { rows: stale } = await query(
+    `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
+     WHERE status = 'vencido' AND paid_amount > 0 ORDER BY expires_at DESC`);
+  const mapBal = (b) => ({ id: b.id, code: b.code, contact_name: b.contact_name, contact_phone: b.contact_phone, total: Number(b.total),
+    paid: Number(b.paid_amount), balance: money(Number(b.total) - Number(b.paid_amount)), expires_at: b.expires_at });
+  res.json({ from, to, method, rows: list, total: money(list.reduce((t, p) => t + p.amount, 0)), by_method: Object.values(byMethod),
+    summary: { day: Number(sum[0].day), week: Number(sum[0].week), month: Number(monthRows[0].t) },
+    balances: bal.map(mapBal), expired_with_money: stale.map(mapBal), methods: [...STAFF_METHODS, ONLINE_METHOD, 'Pago en abonos'] });
+}));
+
+// ---------- calendario de la agencia ----------
+app.get('/api/staff/calendar', requireStaff, wrap(async (req, res) => {
+  await expireOld();
+  const { first, last } = monthRange(str(req.query.month, 7));
+  const t0 = new Date(first + 'T00:00:00Z'), t1 = new Date(addDays(last, 1) + 'T00:00:00Z');
+  const [{ rows: dep }, { rows: exp }, { rows: pay }, { rows: ap }, { rows: tk }] = await Promise.all([
+    query(`SELECT s.flight_date, s.dep_time, s.origin, s.destination, s.airline, s.flight_no, b.id, b.code, b.pax_count, b.status, b.contact_name
+      FROM segments s JOIN bookings b ON b.id = s.booking_id
+      WHERE s.flight_date >= $1 AND s.flight_date <= $2 AND b.status IN ('emitido', 'pendiente_pago', 'pago_revision') ORDER BY s.flight_date, s.dep_time`, [first, last]),
+    query(`SELECT id, code, contact_name, total, paid_amount, expires_at FROM bookings
+      WHERE status = 'pendiente_pago' AND expires_at >= $1 AND expires_at < $2 ORDER BY expires_at`, [t0, t1]),
+    query('SELECT amount, created_at FROM payments WHERE created_at >= $1 AND created_at < $2', [t0, t1]),
+    query(`SELECT id, appt_date, appt_time, name, reason, status FROM appointments
+      WHERE appt_date >= $1 AND appt_date <= $2 AND status <> 'cancelada' ORDER BY appt_date, appt_time`, [first, last]),
+    query('SELECT id, title, due_date, due_time, done FROM tasks WHERE due_date >= $1 AND due_date <= $2 ORDER BY due_date, due_time', [first, last]),
+  ]);
+  const days = {};
+  const day = (d) => (days[d] = days[d] || { departures: [], expiring: [], payments: { n: 0, total: 0 }, appointments: [], tasks: [] });
+  for (const s of dep) day(s.flight_date).departures.push({ booking_id: s.id, code: s.code, contact_name: s.contact_name, pax: s.pax_count, status: s.status, status_label: STATUS[s.status],
+    route: s.origin + '–' + s.destination, flight: s.airline + ' ' + s.flight_no, time: s.dep_time });
+  for (const b of exp) day(new Date(b.expires_at).toISOString().slice(0, 10)).expiring.push({ booking_id: b.id, code: b.code, contact_name: b.contact_name,
+    balance: money(Number(b.total) - Number(b.paid_amount || 0)), at: b.expires_at });
+  for (const p of pay) { const x = day(new Date(p.created_at).toISOString().slice(0, 10)).payments; x.n++; x.total = money(x.total + Number(p.amount)); }
+  for (const a of ap) day(a.appt_date).appointments.push({ id: a.id, time: a.appt_time, name: a.name, reason: APPT_REASONS[a.reason] || a.reason, status: a.status });
+  for (const t of tk) day(t.due_date).tasks.push({ id: t.id, title: t.title, time: t.due_time, done: t.done });
+  res.json({ month: first.slice(0, 7), days });
+}));
+
+// ---------- agenda: citas y tareas ----------
+const APPT_REASONS = { pago: 'Pagar o abonar una reserva', compra: 'Comprar boletos / asesoría', cambio: 'Cambios o cancelación', documentos: 'Dudas de documentos y viaje', otro: 'Otro' };
+const APPT_STATUS = { pendiente: 'Por confirmar', confirmada: 'Confirmada', atendida: 'Atendida', no_asistio: 'No asistió', cancelada: 'Cancelada' };
+// Horario de atención: lunes a viernes 9:00–18:00, sábado 9:00–14:00, citas cada 30 minutos.
+const OPEN_HOURS = { 1: [9, 18], 2: [9, 18], 3: [9, 18], 4: [9, 18], 5: [9, 18], 6: [9, 14] };
+const slotTimes = (date) => {
+  const h = OPEN_HOURS[weekday(date)];
+  if (!h) return [];
+  const out = [];
+  for (let m = h[0] * 60; m < h[1] * 60; m += 30) out.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+  return out;
+};
+async function slotsFor(date, excludeId = 0) {
+  const st = await getSettings();
+  const { rows } = await query(`SELECT appt_time, COUNT(*)::int AS n FROM appointments
+    WHERE appt_date = $1 AND status IN ('pendiente', 'confirmada') AND id <> $2 GROUP BY appt_time`, [date, excludeId]);
+  const used = Object.fromEntries(rows.map((r) => [r.appt_time, Number(r.n)]));
+  return slotTimes(date).map((t) => ({ time: t, left: Math.max(0, st.appt_capacity - (used[t] || 0)) }));
+}
+function readAppt(body, { staff = false } = {}) {
+  const a = {
+    name: str(body.name, 100), phone: str(body.phone, 30), email: str(body.email, 120).toLowerCase(),
+    booking_code: str(body.booking_code, 10).toUpperCase(), reason: str(body.reason, 20), notes: str(body.notes, 400),
+    date: str(body.date, 10), time: str(body.time, 5),
+  };
+  if (a.name.length < 3) throw new HttpError(400, 'Escribe el nombre.');
+  if (a.phone.replace(/\D/g, '').length < 7) throw new HttpError(400, 'Teléfono inválido.');
+  if (a.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.email)) throw new HttpError(400, 'Correo inválido.');
+  if (a.booking_code && !/^[A-Z0-9]{6}$/.test(a.booking_code)) throw new HttpError(400, 'El código de reserva tiene 6 caracteres.');
+  if (!APPT_REASONS[a.reason]) throw new HttpError(400, 'Elige el motivo de la cita.');
+  if (!isDate(a.date) || a.date < todayStr()) throw new HttpError(400, 'Elige una fecha válida.');
+  if (!staff && daysBetween(todayStr(), a.date) > 60) throw new HttpError(400, 'Puedes agendar hasta 60 días antes.');
+  if (!slotTimes(a.date).includes(a.time)) throw new HttpError(400, 'Ese horario no está disponible (la agencia abre de lunes a sábado).');
+  return a;
+}
+async function newApptCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c = 'C'; for (let j = 0; j < 5; j++) c += A[crypto.randomInt(A.length)];
+  return c;
+}
+const apptView = (a) => ({ id: a.id, code: a.code, name: a.name, phone: a.phone, email: a.email, booking_code: a.booking_code,
+  reason: a.reason, reason_label: APPT_REASONS[a.reason] || a.reason, notes: a.notes, date: a.appt_date, time: a.appt_time,
+  status: a.status, status_label: APPT_STATUS[a.status], origin: a.origin, user_name: a.user_name, created_at: a.created_at });
+
+app.get('/api/appointments/info', (req, res) => res.json({ reasons: APPT_REASONS, hours: 'Lunes a viernes de 9:00 a 18:00 y sábados de 9:00 a 14:00', today: todayStr(), max_days: 60 }));
+app.get('/api/appointments/slots', wrap(async (req, res) => {
+  const date = str(req.query.date, 10);
+  if (!isDate(date)) throw new HttpError(400, 'Fecha inválida.');
+  if (date < todayStr()) return res.json({ date, open: false, slots: [] });
+  const slots = await slotsFor(date);
+  res.json({ date, open: slots.length > 0, slots });
+}));
+const apptAttempts = new Map();
+app.post('/api/appointments', wrap(async (req, res) => {
+  const now = Date.now();
+  const at = apptAttempts.get(req.ip) || { n: 0, t: now };
+  if (now - at.t > 3600 * 1000) { at.n = 0; at.t = now; }
+  if (at.n >= 5) throw new HttpError(429, 'Ya agendaste varias citas. Si necesitas otra, llama a la agencia.');
+  const a = readAppt(req.body);
+  const slot = (await slotsFor(a.date)).find((s) => s.time === a.time);
+  if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario se acaba de llenar. Elige otro.');
+  const code = await newApptCode();
+  const { rows } = await query(`INSERT INTO appointments (code, name, phone, email, booking_code, reason, notes, appt_date, appt_time, status, origin)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pendiente','web') RETURNING *`,
+    [code, a.name, a.phone, a.email || null, a.booking_code || null, a.reason, a.notes || null, a.date, a.time]);
+  at.n++; apptAttempts.set(req.ip, at);
+  const v = apptView(rows[0]);
+  res.status(201).json({ code: v.code, date: v.date, time: v.time, reason_label: v.reason_label, name: v.name, status_label: v.status_label });
+}));
+
+app.get('/api/staff/agenda', requireStaff, wrap(async (req, res) => {
+  await expireOld();
+  const date = isDate(req.query.date) ? req.query.date : todayStr();
+  const soon = new Date(Date.now() + 24 * 3600 * 1000), in3 = new Date(Date.now() + 3 * 24 * 3600 * 1000);
+  const [{ rows: ap }, { rows: tk }, { rows: users }, { rows: exp }, { rows: bal }, { rows: stale }, { rows: rev }, { rows: unconf }, { rows: corr }, slots] = await Promise.all([
+    query('SELECT * FROM appointments WHERE appt_date = $1 ORDER BY appt_time, id', [date]),
+    query(`SELECT * FROM tasks WHERE due_date = $1 OR (done = FALSE AND due_date < $1) ORDER BY done, due_date, due_time, id`, [date]),
+    query('SELECT id, name FROM users WHERE active = TRUE ORDER BY name'),
+    query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
+      WHERE status = 'pendiente_pago' AND expires_at < $1 AND (paid_amount IS NULL OR paid_amount = 0) ORDER BY expires_at`, [soon]),
+    query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
+      WHERE status = 'pendiente_pago' AND paid_amount > 0 AND expires_at < $1 ORDER BY expires_at`, [in3]),
+    query("SELECT id, code, contact_name, contact_phone, total, paid_amount FROM bookings WHERE status = 'vencido' AND paid_amount > 0"),
+    query("SELECT id, code, contact_name, contact_phone FROM bookings WHERE status = 'pago_revision'"),
+    query("SELECT * FROM appointments WHERE status = 'pendiente' AND appt_date >= $1 ORDER BY appt_date, appt_time", [todayStr()]),
+    query("SELECT COUNT(*)::int AS n FROM correction_requests WHERE status = 'pendiente'"),
+    slotsFor(date),
+  ]);
+  const uname = Object.fromEntries(users.map((u) => [u.id, u.name]));
+  const bal$ = (b) => money(Number(b.total) - Number(b.paid_amount || 0));
+  const reminders = [
+    ...exp.map((b) => ({ kind: 'vence', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): la reserva vence pronto sin pago. Total ${fmt(b.total)} USD.`, at: b.expires_at })),
+    ...bal.map((b) => ({ kind: 'saldo', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): debe liquidar ${fmt(bal$(b))} USD de saldo.`, at: b.expires_at })),
+    ...stale.map((b) => ({ kind: 'anticipo', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): la reserva venció con ${fmt(b.paid_amount)} USD pagados. Contactar y resolver (reembolso o nueva reserva).` })),
+    ...rev.map((b) => ({ kind: 'revision', booking_id: b.id, code: b.code, text: `${b.contact_name}: pago en línea que requiere revisión.` })),
+    ...unconf.map((a) => ({ kind: 'cita', appointment_id: a.id, date: a.appt_date, text: `Confirmar cita de ${a.name} (${a.phone}) el ${a.appt_date} a las ${a.appt_time}.` })),
+    ...(corr[0].n ? [{ kind: 'correccion', text: `${corr[0].n} solicitud${corr[0].n > 1 ? 'es' : ''} de corrección de datos por revisar.` }] : []),
+  ];
+  res.json({ date, open: slots.length > 0, slots, appointments: ap.map(apptView),
+    tasks: tk.map((t) => ({ id: t.id, title: t.title, due_date: t.due_date, due_time: t.due_time, booking_code: t.booking_code,
+      assigned_to: t.assigned_to, assigned_name: uname[t.assigned_to] || null, done: t.done, created_by: t.created_by, done_by: t.done_by, overdue: !t.done && t.due_date < date })),
+    reminders, users, reasons: APPT_REASONS, statuses: APPT_STATUS });
+}));
+
+app.post('/api/staff/appointments', requireStaff, wrap(async (req, res) => {
+  const a = readAppt(req.body, { staff: true });
+  const slot = (await slotsFor(a.date)).find((s) => s.time === a.time);
+  if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario ya está lleno.');
+  const { rows } = await query(`INSERT INTO appointments (code, name, phone, email, booking_code, reason, notes, appt_date, appt_time, status, origin, user_name)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'confirmada','agencia',$10) RETURNING *`,
+    [await newApptCode(), a.name, a.phone, a.email || null, a.booking_code || null, a.reason, a.notes || null, a.date, a.time, req.session.user.name]);
+  res.status(201).json(apptView(rows[0]));
+}));
+app.put('/api/staff/appointments/:id', requireStaff, wrap(async (req, res) => {
+  const id = Number(req.params.id) || 0;
+  const { rows } = await query('SELECT * FROM appointments WHERE id = $1', [id]);
+  const a = rows[0]; if (!a) throw new HttpError(404, 'Cita no encontrada.');
+  const status = str(req.body.status, 20);
+  if (!APPT_STATUS[status]) throw new HttpError(400, 'Estado inválido.');
+  let date = a.appt_date, time = a.appt_time;
+  if (req.body.date || req.body.time) { // reprogramar
+    date = str(req.body.date, 10) || date; time = str(req.body.time, 5) || time;
+    if (!isDate(date) || date < todayStr() || !slotTimes(date).includes(time)) throw new HttpError(400, 'Fecha u hora inválida.');
+    const slot = (await slotsFor(date, id)).find((s) => s.time === time);
+    if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario ya está lleno.');
+  }
+  await query('UPDATE appointments SET status = $1, appt_date = $2, appt_time = $3, user_name = $4 WHERE id = $5', [status, date, time, req.session.user.name, id]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/staff/tasks', requireStaff, wrap(async (req, res) => {
+  const title = str(req.body.title, 200), due = str(req.body.due_date, 10), time = str(req.body.due_time, 5);
+  const code = str(req.body.booking_code, 10).toUpperCase();
+  const assigned = Number(req.body.assigned_to) || null;
+  if (title.length < 3) throw new HttpError(400, 'Describe la tarea.');
+  if (!isDate(due)) throw new HttpError(400, 'Elige la fecha.');
+  if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new HttpError(400, 'Hora inválida.');
+  if (code && !/^[A-Z0-9]{6}$/.test(code)) throw new HttpError(400, 'El código de reserva tiene 6 caracteres.');
+  if (assigned && !(await query('SELECT 1 FROM users WHERE id = $1 AND active = TRUE', [assigned])).rows.length) throw new HttpError(400, 'Usuario inválido.');
+  await query('INSERT INTO tasks (title, due_date, due_time, booking_code, assigned_to, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+    [title, due, time || null, code || null, assigned, req.session.user.name]);
+  res.status(201).json({ ok: true });
+}));
+app.put('/api/staff/tasks/:id', requireStaff, wrap(async (req, res) => {
+  const id = Number(req.params.id) || 0;
+  if (!(await query('SELECT 1 FROM tasks WHERE id = $1', [id])).rows.length) throw new HttpError(404, 'Tarea no encontrada.');
+  const done = !!req.body.done;
+  await query('UPDATE tasks SET done = $1, done_by = $2, done_at = $3 WHERE id = $4', [done, done ? req.session.user.name : null, done ? new Date() : null, id]);
+  res.json({ ok: true });
+}));
+app.delete('/api/staff/tasks/:id', requireStaff, wrap(async (req, res) => {
+  await query('DELETE FROM tasks WHERE id = $1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+}));
+app.get('/api/staff/booking-by-code/:code', requireStaff, wrap(async (req, res) => {
+  const { rows } = await query('SELECT id FROM bookings WHERE code = $1', [str(req.params.code, 10).toUpperCase()]);
+  if (!rows[0]) throw new HttpError(404, 'No existe esa reserva.');
+  res.json({ id: rows[0].id });
 }));
 
 // ---------- administrador ----------
@@ -798,6 +1168,13 @@ app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   if (!(fee >= 0 && fee <= 500)) throw new HttpError(400, 'Cargo por servicio inválido.');
   const seatVals = ['seat_std', 'seat_front', 'seat_exit'].map((k) => [k, req.body[k] === undefined ? null : Number(req.body[k])]);
   for (const [k, v] of seatVals) { if (v !== null && !(v >= 0 && v <= 500)) throw new HttpError(400, 'Precio de asiento inválido.'); if (v !== null) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]); }
+  const extra = [['deposit_pct', 0.05, 1, 'Anticipo entre 5 y 100 %.'], ['full_pay_days', 1, 90, 'Días para liquidar entre 1 y 90.'], ['appt_capacity', 1, 20, 'Citas por horario entre 1 y 20.']];
+  for (const [k, lo, hi, msg] of extra) {
+    if (req.body[k] === undefined) continue;
+    const v = Number(req.body[k]);
+    if (!(v >= lo && v <= hi)) throw new HttpError(400, msg);
+    await query('UPDATE settings SET value = $1 WHERE key = $2', [String(k === 'deposit_pct' ? v : Math.round(v)), k]);
+  }
   for (const [k, v] of [['tax_rate', tax], ['hold_hours', hold], ['service_fee', fee]]) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]);
   res.json(await getSettings());
 }));

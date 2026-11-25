@@ -33,14 +33,14 @@ async function stripe(method, path, params) {
   return data;
 }
 
-async function createCheckout({ booking, description, successUrl, cancelUrl, expiresAt }) {
+async function createCheckout({ booking, amount, description, successUrl, cancelUrl, expiresAt }) {
   return stripe('POST', '/v1/checkout/sessions', {
     mode: 'payment',
     customer_email: booking.contact_email,
     client_reference_id: booking.code,
     metadata: { booking_code: booking.code },
     payment_intent_data: { metadata: { booking_code: booking.code }, description },
-    line_items: { 0: { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(booking.total * 100), product_data: { name: `Reserva ${booking.code}`, description } } } },
+    line_items: { 0: { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round((amount ?? booking.total) * 100), product_data: { name: `Reserva ${booking.code}`, description } } } },
     success_url: successUrl,
     cancel_url: cancelUrl,
     expires_at: Math.floor(expiresAt.getTime() / 1000),
