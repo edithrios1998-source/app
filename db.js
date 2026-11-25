@@ -195,7 +195,7 @@ async function init() {
     }
   }
   const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20',
-    deposit_pct: '0.3', full_pay_days: '15' };
+    deposit_pct: '0.3', full_pay_days: '15', whatsapp: '' };
   for (const [k, v] of Object.entries(defaults)) {
     const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', [k]);
     if (!rows.length) await query('INSERT INTO settings (key, value) VALUES ($1,$2)', [k, v]);

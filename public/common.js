@@ -42,6 +42,7 @@ function renderHeader(active) {
     const open = $('#mainnav').classList.toggle('open');
     $('#menubtn').setAttribute('aria-expanded', String(open));
   });
+  if (active !== '/personal') mountWhatsApp();
   const f = $('footer .wrap');
   if (f) f.insertAdjacentHTML('beforeend', '<span class="legal">Contacto: <a href="mailto:vuelalatino@yahoo.com">vuelalatino@yahoo.com</a> · <a href="/privacidad">Aviso de privacidad</a> · <a href="/terminos">Términos de uso</a></span>');
 }
@@ -338,7 +339,7 @@ function bookingHtml(b, { staff = false } = {}) {
   const pending = b.status === 'pendiente_pago' && b.paid_amount > 0
     ? `<div class="alert info">${icon('clock', 'ico-sm')}<span>Llevas pagado <b>${usd(b.paid_amount)}</b> de ${usd(b.total)}. <b>Liquida el saldo de ${usd(b.balance)} USD antes de ${dt(b.expires_at)}</b> en línea; puedes hacerlo en varios abonos. Al completar el pago se emiten tus boletos.</span></div>`
     : b.status === 'pendiente_pago'
-    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga con tarjeta antes de ${dt(b.expires_at)}</b>. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.${dep && dep.allowed ? ` <br><b>¿Prefieres pagar en abonos?</b> Aparta con un anticipo desde ${usd(dep.min)} (${Math.round(dep.pct * 100)} %) y liquida el resto antes del ${esc(dLong(dep.deadline))}.` : ''}</span></div>`
+    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga con tarjeta antes de ${dt(b.expires_at)}</b>; si no se paga a tiempo, la reserva se cancela y los asientos se liberan.${dep && dep.allowed ? ` <br><b>¿Prefieres pagar en abonos?</b> Aparta con un anticipo desde ${usd(dep.min)} (${Math.round(dep.pct * 100)} %) y liquida el resto antes del ${esc(dLong(dep.deadline))}.` : ''}</span></div>`
     : b.status === 'pago_revision'
       ? `<div class="alert info">${icon('info', 'ico-sm')}<span>Recibimos tu pago, pero la reserva necesita revisión (por ejemplo, venció antes de completarse el pago). La agencia te contactará para emitir tu boleto o reembolsarte.</span></div>`
       : b.status === 'emitido' && b.payment_method ? `<div class="alert ok">${icon('check', 'ico-sm')}<span>Pagado con <b>${esc(b.payment_method)}</b>${b.paid_at ? ' el ' + dt(b.paid_at) : ''}. Tus boletos están emitidos.</span></div>` : '';
@@ -377,3 +378,29 @@ function bookingHtml(b, { staff = false } = {}) {
       <div class="hint">Contacto: ${esc(b.contact_name)} · ${esc(b.contact_email)} · ${esc(b.contact_phone)}</div></div>`;
   return head + pending + (staff ? '' : payBoxHtml(b)) + segs + pax + correctionsHtml(b) + paymentsHtml(b, { staff }) + price;
 }
+
+// ----- WhatsApp -----
+const waDigits = (n) => String(n || '').replace(/\D/g, '');
+const waLink = (number, text) => 'https://wa.me/' + waDigits(number) + (text ? '?text=' + encodeURIComponent(text) : '');
+const WA_ICON = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-7.7 13.6L3 21l4.5-1.2A9 9 0 1 0 12 3z"/><path d="M9 8.5c0 3.5 2.5 6.5 6.5 6.5l.9-1.6-2-1-1 .9c-1.2-.5-2.2-1.5-2.7-2.7l.9-1-1-2L9 8.5z" fill="currentColor" stroke-width="1"/></svg>';
+let configPromise = null;
+const getConfig = () => (configPromise = configPromise || api('/api/config'));
+const WA_DEFAULT = 'Hola VuelaLatino, quiero información sobre un vuelo.';
+// Botón flotante "Escríbenos por WhatsApp" (solo si la agencia configuró su número).
+function mountWhatsApp(text = WA_DEFAULT) {
+  getConfig().then((c) => {
+    if (!c.whatsapp || $('#wa-fab')) return;
+    document.body.insertAdjacentHTML('beforeend', `<a id="wa-fab" class="wa-fab no-print" href="${esc(waLink(c.whatsapp, text))}" target="_blank" rel="noopener" aria-label="Escríbenos por WhatsApp">${WA_ICON}<span>Escríbenos por WhatsApp</span></a>`);
+    const f = $('footer .legal');
+    if (f) f.insertAdjacentHTML('afterbegin', `WhatsApp: <a href="${esc(waLink(c.whatsapp, text))}" target="_blank" rel="noopener">+${esc(waDigits(c.whatsapp))}</a> · `);
+  }).catch(() => {});
+}
+function setWhatsAppText(text) {
+  getConfig().then((c) => { if (c.whatsapp && $('#wa-fab')) $('#wa-fab').href = waLink(c.whatsapp, text); }).catch(() => {});
+}
+// Texto para compartir una reserva (sin datos personales: con el código solo no se puede abrir).
+function bookingShareText(b) {
+  const lines = b.segments.map((s) => `✈ ${s.origin} → ${s.destination} · ${dDate(s.date)} · ${s.dep_time} · ${s.flight_no}`);
+  return `Mi reserva de vuelo en VuelaLatino\nCódigo: ${b.code}\n${lines.join('\n')}\nConsúltala en ${location.origin}/reserva?code=${b.code}`;
+}
+const shareWaButton = (b) => `<a class="btn wa" href="${esc(waLink('', bookingShareText(b)))}" target="_blank" rel="noopener">${WA_ICON} Compartir por WhatsApp</a>`;

@@ -81,6 +81,7 @@ async function openBooking(id) {
       <div class="row" style="margin-top:12px">
         <button class="secondary" data-print>Imprimir</button>
         ${canFix ? '<button class="secondary" id="fix">Corregir datos</button><button class="secondary" id="seats">Asientos</button>' : ''}
+        ${waCustomerBtn(b)}
         ${canCancel ? '<button class="danger" id="cancel">Cancelar reserva</button>' : ''}
       </div>
       <div id="fix-body"></div>
@@ -113,6 +114,24 @@ async function openBooking(id) {
   };
 }
 
+// Mensaje de WhatsApp para el cliente según el estado de su reserva.
+function customerWaText(b) {
+  const first = String(b.contact_name || '').split(' ')[0];
+  const route = b.segments ? b.segments.map((s) => s.origin + '–' + s.destination).join(' / ') : (b.route || '');
+  const link = location.origin + '/reserva?code=' + b.code;
+  if (b.status === 'pendiente_pago') {
+    const due = b.balance ?? (b.total - (b.paid_amount || 0));
+    return `Hola ${first}, te escribimos de VuelaLatino sobre tu reserva ${b.code}${route ? ' (' + route + ')' : ''}. ${b.paid_amount > 0 ? 'Saldo pendiente' : 'Total'}: ${usd(due)} USD. Puedes pagar en línea antes del ${dt(b.expires_at)} aquí: ${link}`;
+  }
+  if (b.status === 'emitido') return `Hola ${first}, tus boletos de la reserva ${b.code}${route ? ' (' + route + ')' : ''} están emitidos. Consulta tu itinerario aquí: ${link}`;
+  return `Hola ${first}, te escribimos de VuelaLatino sobre tu reserva ${b.code}.`;
+}
+const waCustomerBtn = (b, cls = 'btn wa') => {
+  const d = waDigits(b.contact_phone);
+  if (d.length < 8) return '';
+  return `<a class="${cls}" href="${esc(waLink(d, customerWaText(b)))}" target="_blank" rel="noopener" title="${d.length < 11 ? 'Revisa que el número tenga código de país' : 'Abrir WhatsApp con un mensaje listo'}">${WA_ICON} WhatsApp</a>`;
+};
+
 // ----- pagos -----
 let payData = null;
 ['#pf', '#pt', '#pmf'].forEach((s) => $(s).addEventListener('change', loadPayments));
@@ -131,11 +150,11 @@ async function loadPayments() {
     <td>${esc(x.method)}${x.note ? `<div class="muted small-txt">${esc(x.note)}</div>` : ''}</td><td class="small-txt">${esc(x.user_name || 'En línea')}</td>
     <td style="text-align:right"><b>${usd(x.amount)}</b></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No hay pagos en estas fechas.</td></tr>';
   const balRow = (b, withDue) => `<tr class="click" data-id="${b.id}"><td><b style="letter-spacing:1px">${esc(b.code)}</b></td><td>${esc(b.contact_name)}<div class="muted small-txt">${esc(b.contact_phone)}</div></td>
-    <td>${usd(b.total)}</td><td>${usd(b.paid)}</td>${withDue ? `<td><b>${usd(b.balance)}</b></td><td class="small-txt">${dt(b.expires_at)}</td>` : ''}</tr>`;
+    <td>${usd(b.total)}</td><td>${usd(b.paid)}</td>${withDue ? `<td><b>${usd(b.balance)}</b></td><td class="small-txt">${dt(b.expires_at)}</td>` : ''}<td>${waCustomerBtn({ ...b, status: withDue ? 'pendiente_pago' : 'vencido', paid_amount: b.paid }, 'wa-mini')}</td></tr>`;
   $('#bal-rows').innerHTML = p.balances.map((b) => balRow(b, true)).join('') || '<tr><td colspan="6" class="muted">No hay saldos pendientes.</td></tr>';
   $('#stale-card').classList.toggle('hidden', !p.expired_with_money.length);
   $('#stale-rows').innerHTML = p.expired_with_money.map((b) => balRow(b, false)).join('');
-  $$('[data-pane=payments] tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openBooking(tr.dataset.id)));
+  $$('[data-pane=payments] tr[data-id]').forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a')) openBooking(tr.dataset.id); }));
 }
 $('#pay-csv').addEventListener('click', () => {
   if (!payData) return;
@@ -315,12 +334,12 @@ async function loadSettings() {
   const s = (await getCat()).settings;
   $('#s-tax').value = Math.round(s.tax_rate * 1000) / 10; $('#s-fee').value = s.service_fee; $('#s-hold').value = s.hold_hours;
   $('#s-std').value = s.seat_std; $('#s-front').value = s.seat_front; $('#s-exit').value = s.seat_exit;
-  $('#s-dep').value = Math.round(s.deposit_pct * 100); $('#s-fpd').value = s.full_pay_days;
+  $('#s-dep').value = Math.round(s.deposit_pct * 100); $('#s-fpd').value = s.full_pay_days; $('#s-wa').value = s.whatsapp ? '+' + s.whatsapp : '';
 }
 $('#set-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   try { await api('/api/admin/settings', { method: 'PUT', body: { tax_rate: Number($('#s-tax').value) / 100, service_fee: Number($('#s-fee').value), hold_hours: Number($('#s-hold').value), seat_std: Number($('#s-std').value), seat_front: Number($('#s-front').value), seat_exit: Number($('#s-exit').value),
-    deposit_pct: Number($('#s-dep').value) / 100, full_pay_days: Number($('#s-fpd').value) } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
+    deposit_pct: Number($('#s-dep').value) / 100, full_pay_days: Number($('#s-fpd').value), whatsapp: $('#s-wa').value } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
   catch (ex) { showMsg($('#set-msg'), ex.message); }
 });
 

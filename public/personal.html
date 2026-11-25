@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/styles.css?v=7">
+<link rel="stylesheet" href="/styles.css?v=8">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="theme-color" content="#1747b8">
 </head>
@@ -69,12 +69,12 @@
       <div class="card" style="margin-top:16px">
         <h2>Saldos por cobrar</h2>
         <p class="muted small-txt" style="margin:0">Reservas apartadas con anticipo. Si no liquidan antes de la fecha límite, la reserva vence.</p>
-        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Fecha límite</th></tr></thead><tbody id="bal-rows"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Fecha límite</th><th></th></tr></thead><tbody id="bal-rows"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
       </div>
       <div class="card hidden" style="margin-top:16px" id="stale-card">
         <h2>Vencidas con dinero recibido</h2>
         <p class="muted small-txt" style="margin:0">Contacta al cliente para reembolsar o hacer una reserva nueva. Al resolver, un administrador cancela la reserva para cerrarla.</p>
-        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th></tr></thead><tbody id="stale-rows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th><th></th></tr></thead><tbody id="stale-rows"></tbody></table></div>
       </div>
     </section>
 
@@ -162,6 +162,9 @@
             <div><label for="s-fpd">Liquidar antes del vuelo (días)</label><input id="s-fpd" type="number" min="1" max="90"></div>
           </div>
           <p class="hint">Con el anticipo la reserva queda apartada hasta esa fecha. Si el vuelo sale antes, se paga completa. Pon 100 % para no aceptar abonos.</p>
+          <h3>WhatsApp</h3>
+          <div class="row"><div><label for="s-wa">Número de WhatsApp de la empresa</label><input id="s-wa" type="tel" placeholder="+52 55 1234 5678"></div></div>
+          <p class="hint">Con código de país. Si lo llenas, el sitio muestra el botón “Escríbenos por WhatsApp”. Déjalo vacío para ocultarlo.</p>
           <p class="hint">Tarifas: Básica = precio base · Clásica = ×1.30 · Flexible = ×1.75. Compras con menos de 21 días: +10 %; menos de 7 días: +25 %.</p>
           <div class="alert hidden" id="set-msg"></div>
           <button type="submit" style="margin-top:12px">Guardar</button>
@@ -191,7 +194,7 @@
 </main>
 <div class="modal-bg hidden" id="modal"><div class="modal" id="mb"></div></div>
 
-<script src="/common.js?v=7"></script>
-<script src="/js/personal.js?v=7"></script>
+<script src="/common.js?v=8"></script>
+<script src="/js/personal.js?v=8"></script>
 </body>
 </html>

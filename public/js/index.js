@@ -270,7 +270,7 @@ $('#pax-form').addEventListener('submit', async (e) => {
     show('done');
     $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Tus asientos están apartados. Paga ahora para emitir tus boletos. Guarda tu código para consultar tu reserva.</span></div>
       ${bookingHtml(b)}
-      <div class="row no-print" style="margin-top:16px;max-width:520px"><button class="secondary" data-print>Imprimir</button><a class="btn" href="/reserva?code=${esc(b.code)}">Ver mi reserva</a></div>`;
+      <div class="row3 no-print" style="margin-top:16px;max-width:760px"><button class="secondary" data-print>Imprimir</button>${shareWaButton(b)}<a class="btn" href="/reserva?code=${esc(b.code)}">Ver mi reserva</a></div>`;
     bindPayBox(b, passengers[0].last_name);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (ex) { showMsg(err, ex.message); }

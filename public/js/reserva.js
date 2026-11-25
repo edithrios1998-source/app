@@ -19,7 +19,8 @@ function render(b, lastName, banner = '') {
       <div id="fix-body"></div>
     </div>` : '') + `
     <div class="card" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((ev) => `<li><b>${esc(ev.label)}</b>${ev.note ? `<div class="small-txt">${esc(ev.note)}</div>` : ""}<span class="muted small-txt">${dt(ev.at)}</span></li>`).join('')}</ul></div>
-    <div class="row no-print" style="margin-top:16px;max-width:420px"><button class="secondary" data-print>Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button><a class="btn" href="/">Buscar otro vuelo</a></div>`;
+    <div class="row3 no-print" style="margin-top:16px;max-width:760px"><button class="secondary" data-print>Imprimir ${b.status === 'emitido' ? 'boletos' : 'reserva'}</button>${shareWaButton(b)}<a class="btn" href="/">Buscar otro vuelo</a></div>`;
+  setWhatsAppText(`Hola VuelaLatino, tengo una duda sobre mi reserva ${b.code}.`);
   if (lastName) bindPayBox(b, lastName);
   if (canFix) $('#fix-open').addEventListener('click', () => openFix(b, lastName));
   if ($('#seats-open')) $('#seats-open').addEventListener('click', () => {

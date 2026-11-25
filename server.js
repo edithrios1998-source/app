@@ -118,7 +118,8 @@ async function getSettings() {
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee),
     seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20),
-    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15) };
+    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15),
+    whatsapp: String(s.whatsapp || '') };
 }
 
 // Pago en abonos: con un anticipo la reserva se mantiene apartada hasta `full_pay_days` días antes del primer vuelo.
@@ -1055,6 +1056,14 @@ app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
     const v = Number(req.body[k]);
     if (!(v >= lo && v <= hi)) throw new HttpError(400, msg);
     await query('UPDATE settings SET value = $1 WHERE key = $2', [String(k === 'deposit_pct' ? v : Math.round(v)), k]);
+  }
+  if (req.body.whatsapp !== undefined) {
+    // Número de WhatsApp de la empresa: solo dígitos, con código de país (8 a 15). Vacío = sin WhatsApp.
+    const wa = String(req.body.whatsapp || '').replace(/\D/g, '');
+    if (wa && (wa.length < 8 || wa.length > 15)) throw new HttpError(400, 'WhatsApp: escribe el número con código de país (ej. 52 55 1234 5678).');
+    const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', ['whatsapp']);
+    if (rows.length) await query('UPDATE settings SET value = $1 WHERE key = $2', [wa, 'whatsapp']);
+    else await query('INSERT INTO settings (key, value) VALUES ($1, $2)', ['whatsapp', wa]);
   }
   for (const [k, v] of [['tax_rate', tax], ['hold_hours', hold], ['service_fee', fee]]) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]);
   res.json(await getSettings());
