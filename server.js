@@ -82,7 +82,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300 }));
-const bookingLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, message: 'Hiciste muchas reservas seguidas. Espera un rato o acude a la agencia.' });
+const bookingLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, message: 'Hiciste muchas reservas seguidas. Espera un rato e intenta de nuevo.' });
 const customerLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Demasiados intentos. Espera 15 minutos e intenta de nuevo.' });
 app.post('/api/bookings', bookingLimit);
 app.use(['/api/bookings/lookup', '/api/payments/confirm'], customerLimit);
@@ -428,6 +428,7 @@ app.get('/api/seatmap', wrap(async (req, res) => {
 }));
 
 app.post('/api/bookings', wrap(async (req, res) => {
+  if (!payments.enabled()) throw new HttpError(503, 'Las ventas en línea estarán disponibles muy pronto. Gracias por tu paciencia.');
   await expireOld();
   const segIn = Array.isArray(req.body.segments) ? req.body.segments.slice(0, 2) : [];
   if (!segIn.length) throw new HttpError(400, 'Elige al menos un vuelo.');
@@ -505,7 +506,7 @@ app.post('/api/bookings/lookup', wrap(async (req, res) => {
   res.json(publicBooking(b));
 }));
 
-// Cambiar asientos de un tramo. Cliente: con boleto emitido solo asientos sin costo; agencia: cualquiera.
+// Cambiar asientos de un tramo. Con boleto emitido solo se cambia a asientos sin costo adicional.
 async function changeSeats(b, segIdx, wanted, { staff = false, userName = null } = {}) {
   if (!['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status)) throw new HttpError(400, `La reserva está "${b.status_label}".`);
   const sg = b.segments[Number(segIdx)];
@@ -520,8 +521,7 @@ async function changeSeats(b, segIdx, wanted, { staff = false, userName = null }
     // Lo ya pagado no se vuelve a cobrar: un asiento del mismo precio o menor no tiene costo extra.
     sel.forEach((x, i) => { if (x) { const prev = sg.seats[i]; if (prev && prev.seat === x.seat) x.price = prev.price; } });
     const extra = sel.some((x, i) => x && x.price > (sg.seats[i]?.price || 0));
-    if (extra && !staff) throw new HttpError(400, 'Tus boletos ya están emitidos: los asientos con costo adicional se compran en la agencia. Puedes elegir asientos sin costo.');
-    if (extra) sel.forEach((x, i) => { if (x && x.price > (sg.seats[i]?.price || 0)) x.note = 'cobrar en agencia'; });
+    if (extra) throw new HttpError(400, 'Con los boletos ya emitidos solo se puede cambiar a asientos sin costo adicional (o de igual precio).');
     // Con boleto emitido el total no cambia; se conserva lo pagado.
     sel.forEach((x, i) => { if (x) x.price = Math.min(x.price, sg.seats[i]?.price ?? x.price); });
   }
@@ -535,9 +535,8 @@ async function changeSeats(b, segIdx, wanted, { staff = false, userName = null }
     }
   }
   const txt = sel.map((x, i) => `P${i + 1}: ${x ? x.seat : 'sin asiento'}`).join(', ');
-  const charge = sel.filter((x) => x && x.note).map((x) => x.seat);
   await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
-    [b.id, b.status, `Cambio de asientos ${sg.origin}-${sg.destination}: ${txt}${charge.length ? '. Cobrar en agencia: ' + charge.join(', ') : ''}`, userName]);
+    [b.id, b.status, `Cambio de asientos ${sg.origin}-${sg.destination}: ${txt}`, userName]);
 }
 
 app.post('/api/bookings/:code/seats', wrap(async (req, res) => {
@@ -764,7 +763,6 @@ async function issueBooking(bookingId, { method, ref, userName, note }) {
 
 // Pago en línea confirmado por Stripe: valida el monto y emite. Si la reserva ya no está vigente
 // (cancelada, o vencida y sin asientos), la marca para revisión y reembolso manual.
-const STAFF_METHODS = ['Efectivo', 'Tarjeta en terminal', 'Transferencia', 'Depósito bancario'];
 const ONLINE_METHOD = 'Tarjeta en línea (Stripe)';
 const fmt = (n) => Number(n).toFixed(2);
 
@@ -845,31 +843,11 @@ async function settleOnlinePayment(session) {
   return recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref, trusted: true });
 }
 
-// Cobro en mostrador: el total o un abono.
-app.post('/api/staff/bookings/:id/payments', requireStaff, wrap(async (req, res) => {
-  await expireOld();
-  const method = str(req.body.method, 40);
-  if (!STAFF_METHODS.includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
-  await recordPayment(Number(req.params.id) || 0, { amount: Number(req.body.amount), method, userName: req.session.user.name, note: str(req.body.note, 200) });
-  res.json(await loadBooking('id = $1', [Number(req.params.id) || 0]));
-}));
-
-// Compatibilidad: cobrar el saldo completo y emitir.
-app.post('/api/staff/bookings/:id/issue', requireStaff, wrap(async (req, res) => {
-  await expireOld();
-  const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
-  if (!b) throw new HttpError(404, 'Reserva no encontrada.');
-  const method = str(req.body.payment_method, 40);
-  if (!STAFF_METHODS.includes(method)) throw new HttpError(400, 'Indica cómo pagó el cliente.');
-  await recordPayment(b.id, { amount: b.balance, method, userName: req.session.user.name, note: str(req.body.note, 200) });
-  res.json(await loadBooking('id = $1', [b.id]));
-}));
-
 // ---------- pago en línea ----------
 const baseUrl = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
 
 app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
-  if (!payments.enabled()) throw new HttpError(503, 'El pago en línea no está disponible por ahora. Paga en la agencia.');
+  if (!payments.enabled()) throw new HttpError(503, 'El pago en línea no está disponible en este momento. Intenta más tarde.');
   await expireOld();
   const code = str(req.params.code, 10).toUpperCase();
   const b = await loadBooking('code = $1', [code]);
@@ -1029,7 +1007,7 @@ app.get('/api/staff/payments', requireStaff, wrap(async (req, res) => {
     paid: Number(b.paid_amount), balance: money(Number(b.total) - Number(b.paid_amount)), expires_at: b.expires_at });
   res.json({ from, to, method, rows: list, total: money(list.reduce((t, p) => t + p.amount, 0)), by_method: Object.values(byMethod),
     summary: { day: Number(sum[0].day), week: Number(sum[0].week), month: Number(monthRows[0].t) },
-    balances: bal.map(mapBal), expired_with_money: stale.map(mapBal), methods: [...STAFF_METHODS, ONLINE_METHOD, 'Pago en abonos'] });
+    balances: bal.map(mapBal), expired_with_money: stale.map(mapBal), methods: [...new Set([ONLINE_METHOD, ...(await query('SELECT DISTINCT method FROM payments ORDER BY method')).rows.map((r) => r.method)])] });
 }));
 
 // ---------- calendario de la agencia ----------
@@ -1208,7 +1186,7 @@ app.use((req, res) => res.status(404).sendFile(path.join(__dirname, 'public', '4
 app.use((err, req, res, next) => {
   const isApi = req.path.startsWith('/api');
   if (err instanceof HttpError) return res.status(err.code).json({ error: err.message });
-  if (err.stripe) { console.error('[stripe]', err.message); return res.status(502).json({ error: 'No se pudo conectar con el procesador de pagos. Intenta de nuevo o paga en la agencia.' }); }
+  if (err.stripe) { console.error('[stripe]', err.message); return res.status(502).json({ error: 'No se pudo conectar con el procesador de pagos. Intenta de nuevo en unos minutos.' }); }
   // Errores del cliente (JSON mal formado, cuerpo muy grande): sin detalles técnicos.
   if (err.status >= 400 && err.status < 500) {
     return res.status(err.status).json({ error: err.status === 413 ? 'Los datos enviados son demasiado grandes.' : 'Solicitud inválida.' });

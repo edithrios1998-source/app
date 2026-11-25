@@ -125,7 +125,8 @@ function flightHtml(f, pax) {
 
 // Recuadro "Pagar ahora" (Stripe). lastName autoriza el pago sin pedir de nuevo los datos.
 function payBoxHtml(b) {
-  if (!window.ONLINE_PAY || b.status !== 'pendiente_pago') return '';
+  if (b.status !== 'pendiente_pago') return '';
+  if (!window.ONLINE_PAY) return `<div class="alert warn no-print">${icon('info', 'ico-sm')}<span>El pago en línea no está disponible en este momento. Intenta más tarde, antes de que venza tu reserva.</span></div>`;
   const bal = b.balance ?? b.total, dep = b.deposit, part = b.paid_amount > 0;
   return `<div class="paybox no-print" id="paybox">
     <div><h3>${icon('card')} ${part ? 'Paga tu saldo o haz otro abono con tarjeta' : 'Paga ahora con tarjeta y recibe tus boletos al instante'}</h3>
@@ -335,9 +336,9 @@ function bookingHtml(b, { staff = false } = {}) {
     </div>`;
   const dep = b.deposit;
   const pending = b.status === 'pendiente_pago' && b.paid_amount > 0
-    ? `<div class="alert info">${icon('clock', 'ico-sm')}<span>Llevas pagado <b>${usd(b.paid_amount)}</b> de ${usd(b.total)}. <b>Liquida el saldo de ${usd(b.balance)} USD antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' en línea o' : ''} en la agencia; puedes hacerlo en varios abonos. Al completar el pago se emiten tus boletos.</span></div>`
+    ? `<div class="alert info">${icon('clock', 'ico-sm')}<span>Llevas pagado <b>${usd(b.paid_amount)}</b> de ${usd(b.total)}. <b>Liquida el saldo de ${usd(b.balance)} USD antes de ${dt(b.expires_at)}</b> en línea; puedes hacerlo en varios abonos. Al completar el pago se emiten tus boletos.</span></div>`
     : b.status === 'pendiente_pago'
-    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga antes de ${dt(b.expires_at)}</b>${window.ONLINE_PAY ? ' con tarjeta en línea o' : ''} en la agencia con tu código de reserva. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.${dep && dep.allowed ? ` <br><b>¿Prefieres pagar en abonos?</b> Aparta con un anticipo desde ${usd(dep.min)} (${Math.round(dep.pct * 100)} %) y liquida el resto antes del ${esc(dLong(dep.deadline))}.` : ''}</span></div>`
+    ? `<div class="alert warn">${icon('clock', 'ico-sm')}<span><b>Paga con tarjeta antes de ${dt(b.expires_at)}</b>. Si no se paga a tiempo, la reserva se cancela y los asientos se liberan.${dep && dep.allowed ? ` <br><b>¿Prefieres pagar en abonos?</b> Aparta con un anticipo desde ${usd(dep.min)} (${Math.round(dep.pct * 100)} %) y liquida el resto antes del ${esc(dLong(dep.deadline))}.` : ''}</span></div>`
     : b.status === 'pago_revision'
       ? `<div class="alert info">${icon('info', 'ico-sm')}<span>Recibimos tu pago, pero la reserva necesita revisión (por ejemplo, venció antes de completarse el pago). La agencia te contactará para emitir tu boleto o reembolsarte.</span></div>`
       : b.status === 'emitido' && b.payment_method ? `<div class="alert ok">${icon('check', 'ico-sm')}<span>Pagado con <b>${esc(b.payment_method)}</b>${b.paid_at ? ' el ' + dt(b.paid_at) : ''}. Tus boletos están emitidos.</span></div>` : '';

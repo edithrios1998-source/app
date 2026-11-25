@@ -8,7 +8,7 @@ function render(b, lastName, banner = '') {
   $('#res').innerHTML = banner + bookingHtml(b) + (canFix && future ? `
     <div class="card no-print" style="margin-top:14px">
       <div class="modal-head" style="flex-wrap:wrap"><div><h2>Tus asientos</h2>
-        <p class="muted small-txt" style="margin:0">${b.status === 'emitido' ? 'Puedes cambiar a asientos sin costo adicional. Los asientos con costo extra se compran en la agencia.' : 'Elige o cambia tus asientos. Si tienen costo, se suma al total de tu reserva.'}</p></div>
+        <p class="muted small-txt" style="margin:0">${b.status === 'emitido' ? 'Con boletos emitidos puedes cambiar a asientos sin costo adicional o de igual precio.' : 'Elige o cambia tus asientos. Si tienen costo, se suma al total de tu reserva.'}</p></div>
         <button class="secondary" id="seats-open" type="button">${b.segments.some((s) => s.seats.some(Boolean)) ? 'Cambiar asientos' : 'Elegir asientos'}</button></div>
       <div id="seats-body" style="margin-top:12px"></div>
     </div>` : '') + (canFix ? `
@@ -85,7 +85,7 @@ $('#f').addEventListener('submit', async (e) => {
       $('#res').innerHTML = `<div class="alert error">${esc(ex.message)}</div>`;
     }
   } else if (qs.get('pago') === 'cancelado') {
-    $('#res').innerHTML = `<div class="alert warn">${icon('info', 'ico-sm')}<span>No se completó el pago. Tu reserva sigue apartada hasta que venza: escribe tu apellido para intentar de nuevo o paga en la agencia.</span></div>`;
+    $('#res').innerHTML = `<div class="alert warn">${icon('info', 'ico-sm')}<span>No se completó el pago. Tu reserva sigue apartada hasta que venza: escribe tu apellido para intentar de nuevo.</span></div>`;
     $('#last').focus();
   }
 })().catch(() => {});

@@ -11,7 +11,11 @@ const apBy = (c) => S.airports.find((a) => a.code === c);
   const [airports, map, cfg] = await Promise.all([api('/api/airports'), api('/api/routes-map'), api('/api/config')]);
   Object.assign(S, { airports, map, cfg });
   window.ONLINE_PAY = cfg.online_payments;
-  if (cfg.online_payments) $('#book-btn').textContent = 'Reservar y continuar al pago';
+  $('#book-btn').textContent = 'Reservar y continuar al pago';
+  if (!cfg.online_payments) {
+    $('#book-btn').disabled = true;
+    $('#book-btn').insertAdjacentHTML('beforebegin', `<div class="alert warn">${icon('info', 'ico-sm')}<span>Las ventas en línea estarán disponibles muy pronto. Puedes consultar vuelos y precios mientras tanto.</span></div>`);
+  }
   const origins = airports.filter((a) => map[a.code]);
   const groups = (list) => [...new Set(list.map((a) => a.country))].map((c) =>
     `<optgroup label="${esc(c)}">${list.filter((a) => a.country === c).map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code})</option>`).join('')}</optgroup>`).join('');
@@ -243,7 +247,7 @@ function drawSummary() {
       <div class="sum-line"><span>Impuestos (${Math.round(S.cfg.tax_rate * 100)} %) y cargo por servicio</span><span>${usd(t.taxes)}</span></div>
       ${(S.seats || []).some((a) => a.some(Boolean)) ? `<div class="sum-line"><span>Asientos (${S.seats.map((a, i) => a.filter(Boolean).join(', ')).filter(Boolean).join(' / ')})</span><span>${t.seats ? usd(t.seats) : 'Sin costo'}</span></div>` : ''}
       <div class="sum-total"><span>Total USD</span><b>${usd(t.total)}</b></div>
-      <div class="hint">${S.cfg.online_payments ? 'Después de reservar puedes pagar con tarjeta en línea o' : 'Tienes ' + S.cfg.hold_hours + ' h para pagar'} en la agencia${S.cfg.online_payments ? ' (plazo: ' + S.cfg.hold_hours + ' h)' : ''}.</div>
+      <div class="hint">Después de reservar pagas con tarjeta en línea, completo o con anticipo si tu vuelo lo permite. Tus asientos quedan apartados ${S.cfg.hold_hours} h.</div>
     </div>`;
 }
 $('#back-results').addEventListener('click', () => { S.leg = 0; showLeg(); });
@@ -264,11 +268,11 @@ $('#pax-form').addEventListener('submit', async (e) => {
       segments: S.sel.map((s, i) => ({ route_id: s.flight.route_id, date: s.flight.date, fare: s.fare.code, seats: S.seats[i] })), passengers, contact, accept_terms: true } });
     Object.keys(seatMaps).forEach((k) => delete seatMaps[k]); S.seatKey = null;
     show('done');
-    $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Tus asientos están apartados. ${S.cfg.online_payments ? 'Paga ahora para emitir tus boletos.' : 'Guarda tu código: lo necesitas para pagar y consultar tu reserva.'}</span></div>
+    $('#done').innerHTML = `<div class="alert ok">${icon('check', 'ico-sm')}<span><b>¡Reserva creada!</b> Tus asientos están apartados. Paga ahora para emitir tus boletos. Guarda tu código para consultar tu reserva.</span></div>
       ${bookingHtml(b)}
       <div class="row no-print" style="margin-top:16px;max-width:520px"><button class="secondary" data-print>Imprimir</button><a class="btn" href="/reserva?code=${esc(b.code)}">Ver mi reserva</a></div>`;
     bindPayBox(b, passengers[0].last_name);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (ex) { showMsg(err, ex.message); }
-  finally { btn.disabled = false; btn.textContent = S.cfg.online_payments ? 'Reservar y continuar al pago' : 'Reservar y apartar asientos'; }
+  finally { btn.disabled = false; btn.textContent = 'Reservar y continuar al pago'; btn.disabled = !S.cfg.online_payments; }
 });

@@ -72,15 +72,11 @@ async function openBooking(id) {
     ${bookingHtml(b, { staff: true })}
     <div class="card no-print" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((e) => `<li><b>${esc(e.label)}</b>${e.note ? ' — ' + esc(e.note) : ''}<br><span class="muted small-txt">${dt(e.at)}${e.user_name ? ' · ' + esc(e.user_name) : ''}</span></li>`).join('')}</ul></div>
     <div class="card no-print" style="margin-top:14px">
-      ${b.status === 'pendiente_pago' ? `<h2>Registrar pago</h2>
+      ${b.status === 'pendiente_pago' ? `<h2>Pago</h2>
         <div class="pay-sum"><div><span>Total</span><b>${usd(b.total)}</b></div><div><span>Pagado</span><b>${usd(b.paid_amount)}</b></div><div class="due"><span>Saldo</span><b>${usd(b.balance)}</b></div></div>
         <p class="muted small-txt" style="margin:8px 0 0">${dep && dep.allowed
           ? `Acepta abonos: ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo <b>${usd(dep.min)}</b>. El saldo se liquida antes del <b>${esc(dLong(dep.deadline))}</b>.`
-          : 'Esta reserva se cobra completa (el vuelo está cerca o no admite abonos).'} Verifica que los nombres coincidan con los documentos.</p>
-        <div class="row3"><div><label for="pa">Monto (USD)</label><input id="pa" type="number" step="0.01" min="${dep && dep.allowed ? dep.min : b.balance}" max="${b.balance}" value="${b.balance}" ${dep && dep.allowed ? '' : 'readonly'}></div>
-          <div><label for="pm">Forma de pago</label><select id="pm"><option>Efectivo</option><option>Tarjeta en terminal</option><option>Transferencia</option><option>Depósito bancario</option></select></div>
-          <div><label for="pn">Nota (opcional)</label><input id="pn" placeholder="Ej. folio de terminal"></div></div>
-        <button class="accent block" id="pay" style="margin-top:14px"></button>` : ''}
+          : 'Esta reserva se paga completa (el vuelo está cerca o no admite abonos).'} El cliente paga en línea desde Mi reserva; los boletos se emiten solos al completar el pago.</p>` : ''}
       <div class="alert error hidden" id="merr"></div>
       <div class="row" style="margin-top:12px">
         <button class="secondary" data-print>Imprimir</button>
@@ -90,23 +86,10 @@ async function openBooking(id) {
       <div id="fix-body"></div>
     </div>`;
   $('#modal').classList.remove('hidden'); $('#mclose').onclick = closeModal;
-  if ($('#pay')) {
-    const label = () => {
-      const a = Number($('#pa').value) || 0;
-      $('#pay').textContent = a >= b.balance - 0.005 ? `Registrar ${usd(b.balance)} y emitir ${b.pax_count} boleto${b.pax_count > 1 ? 's' : ''}` : `Registrar ${b.paid_amount > 0 ? 'abono' : 'anticipo'} de ${usd(a)}`;
-    };
-    $('#pa').addEventListener('input', label); label();
-    $('#pay').onclick = async () => {
-      const a = Number($('#pa').value) || 0;
-      if (!confirm(`¿Registrar ${usd(a)} USD en ${$('#pm').value} para la reserva ${b.code}?`)) return;
-      try { await api(`/api/staff/bookings/${b.id}/payments`, { method: 'POST', body: { amount: a, method: $('#pm').value, note: $('#pn').value } }); loadBookings(); openBooking(b.id); }
-      catch (e) { showMsg($('#merr'), e.message); }
-    };
-  }
   if ($('#seats')) $('#seats').onclick = () => {
     $('#fix-body').innerHTML = '<h2 style="margin-top:18px">Asientos</h2><div id="seat-ed"></div>';
     mountSeatEditor($('#seat-ed'), b, {
-      note: b.status === 'pendiente_pago' ? 'El costo de los asientos se suma al total de la reserva.' : 'Boleto emitido: si el nuevo asiento cuesta más, cobra la diferencia en mostrador (queda anotado en el historial).',
+      note: b.status === 'pendiente_pago' ? 'El costo de los asientos se suma al total de la reserva.' : 'Boleto emitido: solo se puede cambiar a asientos sin costo adicional o de igual precio.',
       save: (seg, seats) => api('/api/staff/bookings/' + b.id + '/seats', { method: 'PUT', body: { segment: seg, seats } }),
       onSaved: (nb) => { if (nb) { loadBookings(); openBooking(b.id); } else $('#fix-body').innerHTML = ''; },
     });

@@ -1,8 +1,8 @@
 # VuelaLatino
 
-Aplicación web para vender boletos de avión desde una agencia: búsqueda de vuelos, comparación de tarifas, reserva con datos de pasajeros y emisión de boletos cuando el cliente paga en la agencia.
+Aplicación web para vender boletos de avión **solo en línea**: búsqueda de vuelos, comparación de tarifas, reserva con datos de pasajeros y emisión automática de boletos cuando el cliente completa el pago.
 
-El cliente puede **pagar en línea con tarjeta (Stripe)** y sus boletos se emiten al instante, o pagar en la agencia. La app no se conecta a los sistemas de reservas de las aerolíneas: los vuelos, horarios y precios los administra la agencia en su panel.
+Todos los pagos son **en línea con tarjeta (Stripe)**, completos o en abonos; no hay cobro en mostrador. **Sin las claves de Stripe configuradas no se pueden crear reservas** (el sitio muestra los vuelos y avisa que las ventas abrirán pronto). La app no se conecta a los sistemas de reservas de las aerolíneas: los vuelos, horarios y precios los administra la agencia en su panel.
 
 ## Pantallas
 
@@ -11,16 +11,16 @@ El cliente puede **pagar en línea con tarjeta (Stripe)** y sus boletos se emite
 | `/` | Clientes y agentes | Busca vuelos (ida o ida y vuelta), compara tarifas Básica / Clásica / Flexible, captura pasajeros y crea la reserva |
 | `/reserva` | Clientes | Consulta la reserva con código + apellido, ve el itinerario y los boletos |
 | `/` (calendario) | Clientes | En los resultados, "Ver calendario de precios del mes" muestra el precio más bajo de cada día y marca los más baratos |
-| `/personal` | Agencia | Reservas (cobrar total o abonos, emitir, cancelar), **Pagos** (cobros por fecha y forma de pago, saldos por cobrar, CSV), **Calendario** (salidas, vencimientos y cobros por día), vuelos y horarios, aerolíneas, aeropuertos, precios y plazos, usuarios |
+| `/personal` | Agencia | Reservas (consultar, ver pagos, corregir datos, asientos, cancelar), **Pagos** (pagos en línea por fecha, saldos por cobrar, CSV), **Calendario** (salidas, vencimientos y cobros por día), vuelos y horarios, aerolíneas, aeropuertos, precios y plazos, usuarios |
 
 ## Reglas principales
 
 - **Precio por pasajero:** precio base del vuelo × tarifa (Básica ×1, Clásica ×1.30, Flexible ×1.75), +10 % si faltan menos de 21 días y +25 % si faltan menos de 7.
 - **Impuestos y cargos:** porcentaje de impuestos + cargo por servicio por pasajero (configurables).
 - **Plazo de pago:** la reserva aparta asientos durante el plazo configurado (24 h por defecto); si no se paga, vence y libera los asientos.
-- **Selección de asientos:** mapa por vuelo (6 por fila); filas 1–3 Preferente, dos filas de salida de emergencia y el resto Estándar. Básica paga cualquier asiento, Clásica tiene el estándar gratis y Flexible todos gratis (precios configurables). Se elige al reservar o después en Mi reserva; con boleto emitido el cliente solo cambia a asientos sin costo adicional y la agencia puede asignar cualquiera (anotando qué cobrar).
+- **Selección de asientos:** mapa por vuelo (6 por fila); filas 1–3 Preferente, dos filas de salida de emergencia y el resto Estándar. Básica paga cualquier asiento, Clásica tiene el estándar gratis y Flexible todos gratis (precios configurables). Se elige al reservar o después en Mi reserva; con boleto emitido solo se cambia a asientos sin costo adicional o de igual precio.
 - **Corrección de datos:** antes de pagar, el cliente corrige pasajeros y contacto desde Mi reserva. Con boleto emitido, el contacto se actualiza al momento y los cambios de pasajeros llegan como solicitud a la pestaña Correcciones de la agencia. En el nombre solo se permiten hasta 3 letras de diferencia después de emitir. La agencia también corrige directamente; todo queda en el historial.
-- **Pagos en abonos:** la reserva se aparta con un anticipo mínimo (30 % por defecto) y el saldo se liquida en uno o varios abonos hasta 15 días antes del primer vuelo (ambos configurables en Precios y plazos). Con el anticipo, el plazo de la reserva se extiende hasta esa fecha; al cubrir el total se emiten los boletos. Si el vuelo sale antes, se paga completa. Los abonos se cobran en la agencia o en línea. Si una reserva con anticipo vence o se cancela, queda anotado cuánto se recibió para reembolsar o aplicar.
+- **Pagos en abonos:** la reserva se aparta con un anticipo mínimo (30 % por defecto) y el saldo se liquida en uno o varios abonos hasta 15 días antes del primer vuelo (ambos configurables en Precios y plazos). Con el anticipo, el plazo de la reserva se extiende hasta esa fecha; al cubrir el total se emiten los boletos. Si el vuelo sale antes, se paga completa. Los abonos se pagan en línea desde Mi reserva. Si una reserva con anticipo vence o se cancela, queda anotado cuánto se recibió para reembolsar o aplicar.
 - **Vuelos internacionales:** exigen pasaporte para cada pasajero.
 - **Hora de llegada:** se calcula con la duración y la diferencia UTC de cada aeropuerto (ajustable en el panel por horario de verano).
 - **Estados:** Pendiente de pago → Boleto emitido; o Cancelada / Vencida. Si un pago en línea llega para una reserva vencida sin asientos, cancelada o con monto distinto, queda en *Pagada: requiere revisión* para reembolsar desde Stripe.
@@ -35,7 +35,7 @@ Las aerolíneas "Aerolínea Ejemplo" y "Vuelos Demo" y sus horarios son datos de
 | `ADMIN_USER` / `ADMIN_PASSWORD` | Crea el primer administrador cuando la base está vacía. |
 | `SESSION_SECRET` | Firma de la cookie de sesión. **Obligatoria en producción** (mínimo 32 caracteres); sin ella el servidor no arranca. |
 | `PGSSL` | `1` para conectar a Postgres con SSL (URL externa). |
-| `STRIPE_SECRET_KEY` | Clave secreta de Stripe (`sk_test_…` para pruebas, `sk_live_…` para cobrar). Sin ella, el pago en línea se oculta. |
+| `STRIPE_SECRET_KEY` | Clave secreta de Stripe (`sk_test_…` para pruebas, `sk_live_…` para cobrar). Sin ella no se pueden crear reservas. |
 | `STRIPE_WEBHOOK_SECRET` | Secreto del webhook (`whsec_…`) para confirmar pagos aunque el cliente cierre la ventana. |
 | `PUBLIC_URL` | URL pública de la app (ej. `https://vuelalatino.onrender.com`) para el regreso desde Stripe. |
 
