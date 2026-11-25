@@ -42,15 +42,14 @@ const apBy = (c) => S.airports.find((a) => a.code === c);
     $('.f-ret').style.visibility = S.trip === 'round' ? 'visible' : 'hidden';
   }));
 
-  // Destinos populares
-  const popular = [['MEX', 'CUN', '#1d56d8,#0c2a6e'], ['MEX', 'BOG', '#ff8a3d,#c2410c'], ['MEX', 'LAX', '#0f766e,#064e3b'], ['BOG', 'MDE', '#7c3aed,#4c1d95'],
-    ['MEX', 'GUA', '#be123c,#7f1d1d'], ['PTY', 'SDQ', '#0369a1,#0c4a6e'], ['MIA', 'BOG', '#a16207,#713f12'], ['BOG', 'LIM', '#4338ca,#1e1b4b']]
-    .filter(([o, d]) => (map[o] || []).includes(d) && apBy(o) && apBy(d));
-  $('#dest').innerHTML = popular.map(([o, d, g]) => `<a class="dest" href="/?from=${o}&to=${d}" data-o="${o}" data-d="${d}" style="background:linear-gradient(140deg,${g.split(',')[0]},${g.split(',')[1]})">
-    <span class="tag">${o} → ${d}</span><b>${esc(apBy(d).city)}</b><span>desde ${esc(apBy(o).city)}</span></a>`).join('');
-  $$('.dest').forEach((a) => a.addEventListener('click', (e) => {
-    e.preventDefault(); $('#from').value = a.dataset.o; fillTo(a.dataset.d); $('#search').requestSubmit();
-  }));
+  // Aerolíneas (las reales dadas de alta en el panel)
+  api('/api/airlines').then((list) => {
+    $('#al-list').innerHTML = list.length ? list.map((x) => `<div class="al-card">
+        <span class="al-logo al-big" style="background:${esc(x.color)}">${esc(x.code)}</span>
+        <div class="al-info"><b>${esc(x.name)}</b><span>${esc(x.country)}</span></div>
+        ${x.has_flights ? '<span class="badge b-emitido">Vuelos en línea</span>' : '<a class="al-quote" href="/cita?motivo=compra">Cotizar</a>'}
+      </div>`).join('') : '<div class="empty">Pronto agregaremos aerolíneas.</div>';
+  }).catch(() => { $('#al-list').innerHTML = '<div class="empty">No se pudieron cargar las aerolíneas.</div>'; });
   if (qs.get('from') && qs.get('to')) $('#search').requestSubmit();
 })().catch((e) => showMsg($('#search-err'), e.message));
 

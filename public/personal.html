@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css?v=3">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="theme-color" content="#1747b8">
 </head>
@@ -151,10 +151,11 @@
       <div class="alert warn" id="demo-note"></div>
       <div class="card">
         <div class="modal-head"><h2>Aerolíneas</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>Aerolínea</th><th>Código</th><th>Color</th><th>Estado</th><th></th></tr></thead><tbody id="airlines"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Aerolínea</th><th>Código</th><th>País</th><th>Color</th><th>Estado</th><th></th></tr></thead><tbody id="airlines"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
         <form id="al-f" class="row4" style="align-items:end;margin-top:8px">
           <div><label for="al-code">Código</label><input id="al-code" maxlength="3" placeholder="AM"></div>
           <div><label for="al-name">Nombre</label><input id="al-name"></div>
+          <div><label for="al-country">País</label><input id="al-country"></div>
           <div><label for="al-color">Color</label><input id="al-color" type="color" value="#1747b8" style="height:44px;padding:4px"></div>
           <div><button class="block" type="submit">Agregar aerolínea</button></div>
         </form>
@@ -228,7 +229,7 @@
 </main>
 <div class="modal-bg hidden" id="modal"><div class="modal" id="mb"></div></div>
 
-<script src="/common.js"></script>
-<script src="/js/personal.js"></script>
+<script src="/common.js?v=3"></script>
+<script src="/js/personal.js?v=3"></script>
 </body>
 </html>

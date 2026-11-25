@@ -411,3 +411,12 @@ footer .legal a { color: var(--muted); }
 .legal-doc h2 { margin-top: 26px; font-size: 1.1rem; }
 .legal-doc p, .legal-doc li { line-height: 1.65; color: var(--ink-2); }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 60; max-width: min(560px, calc(100% - 32px)); box-shadow: var(--shadow-lg); margin: 0; }
+
+/* aerolíneas en el inicio */
+.al-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.al-card { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: var(--shadow-sm); }
+.al-big { width: 46px; height: 46px; border-radius: 12px; font-size: .9rem; flex: none; }
+.al-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.al-info b { line-height: 1.25; overflow-wrap: anywhere; }
+.al-info span { font-size: .8rem; color: var(--muted); }
+.al-quote { font-size: .8rem; font-weight: 700; color: var(--brand); white-space: nowrap; }

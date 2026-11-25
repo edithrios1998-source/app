@@ -413,8 +413,8 @@ function editRoute(r) {
 }
 async function loadCatalog() {
   await getCat();
-  $('#demo-note').innerHTML = icon('info', 'ico-sm') + '<span>Las aerolíneas "Aerolínea Ejemplo" y "Vuelos Demo" y sus horarios son datos de prueba. Agrega las aerolíneas reales con las que vendes y desactiva las de ejemplo.</span>';
-  $('#airlines').innerHTML = cat.airlines.map((a) => `<tr data-code="${a.code}"><td><div class="airline">${alLogo(a)}<b>${esc(a.name)}</b></div></td><td>${esc(a.code)}</td>
+  $('#demo-note').innerHTML = icon('info', 'ico-sm') + '<span>Ya están dadas de alta las principales aerolíneas reales de la región; aparecen en el inicio. Para venderlas en línea, carga sus vuelos en "Vuelos y horarios". "Aerolínea Ejemplo" y "Vuelos Demo" son de prueba: desactívalas cuando tengas vuelos reales.</span>';
+  $('#airlines').innerHTML = cat.airlines.map((a) => `<tr data-code="${a.code}"><td><div class="airline">${alLogo(a)}<b>${esc(a.name)}</b>${a.demo ? ' <span class="badge b-vencido">Ejemplo</span>' : ''}</div></td><td>${esc(a.code)}</td><td class="small-txt">${esc(a.country || '')}</td>
     <td><input type="color" value="${esc(a.color)}" data-k="color" style="width:52px;height:34px;padding:2px"></td>
     <td>${a.active ? '<span class="badge b-emitido">Activa</span>' : '<span class="badge b-vencido">Inactiva</span>'}</td>
     <td style="white-space:nowrap"><button class="secondary small" data-act="toggle">${a.active ? 'Desactivar' : 'Activar'}</button></td></tr>`).join('');
@@ -438,7 +438,7 @@ async function loadCatalog() {
 }
 $('#al-f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  try { await api('/api/admin/airlines', { method: 'POST', body: { code: $('#al-code').value, name: $('#al-name').value, color: $('#al-color').value } }); e.target.reset(); showMsg($('#al-msg'), 'Aerolínea agregada.', 'ok'); loadCatalog(); }
+  try { await api('/api/admin/airlines', { method: 'POST', body: { code: $('#al-code').value, name: $('#al-name').value, country: $('#al-country').value, color: $('#al-color').value } }); e.target.reset(); showMsg($('#al-msg'), 'Aerolínea agregada.', 'ok'); loadCatalog(); }
   catch (ex) { showMsg($('#al-msg'), ex.message); }
 });
 $('#ap-f').addEventListener('submit', async (e) => {

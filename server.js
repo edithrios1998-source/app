@@ -96,7 +96,8 @@ app.use(cookieSession({
 }));
 app.use(express.static(path.join(__dirname, 'public'), {
   extensions: ['html'],
-  setHeaders: (res, file) => res.set('Cache-Control', /\.html$/.test(file) ? 'no-cache' : 'public, max-age=600'),
+  // HTML, JS y CSS se revalidan siempre (ETag) para que un deploy nunca mezcle versiones.
+  setHeaders: (res, file) => res.set('Cache-Control', /\.(html|js|css)$/.test(file) ? 'no-cache' : 'public, max-age=3600'),
 }));
 
 // ---------- utilidades ----------
@@ -280,6 +281,16 @@ app.get('/api/config', wrap(async (req, res) => {
 app.get('/api/airports', wrap(async (req, res) => {
   const { rows } = await query('SELECT code, city, name, country FROM airports WHERE active = TRUE ORDER BY country, city');
   res.json(rows);
+}));
+
+// Aerolíneas activas (sin las de ejemplo) y si ya tienen vuelos a la venta.
+app.get('/api/airlines', wrap(async (req, res) => {
+  const [{ rows }, { rows: withRoutes }] = await Promise.all([
+    query('SELECT code, name, color, country FROM airlines WHERE active = TRUE AND (demo IS NULL OR demo = FALSE) ORDER BY country, name'),
+    query('SELECT DISTINCT airline FROM routes WHERE active = TRUE'),
+  ]);
+  const sell = new Set(withRoutes.map((r) => r.airline));
+  res.json(rows.map((a) => ({ code: a.code, name: a.name, color: a.color, country: a.country || '', has_flights: sell.has(a.code) })));
 }));
 
 // Destinos con vuelos desde cada aeropuerto (para sugerir rutas válidas).
@@ -1244,7 +1255,7 @@ app.post('/api/admin/airlines', requireAdmin, wrap(async (req, res) => {
   if (name.length < 2) throw new HttpError(400, 'Escribe el nombre.');
   const { rows } = await query('SELECT 1 FROM airlines WHERE code = $1', [code]);
   if (rows.length) throw new HttpError(400, 'Ese código ya existe.');
-  await query('INSERT INTO airlines (code, name, color) VALUES ($1,$2,$3)', [code, name, color]);
+  await query('INSERT INTO airlines (code, name, color, country, demo) VALUES ($1,$2,$3,$4,FALSE)', [code, name, color, str(req.body.country, 60) || null]);
   res.status(201).json({ ok: true });
 }));
 app.put('/api/admin/airlines/:code', requireAdmin, wrap(async (req, res) => {
@@ -1253,7 +1264,8 @@ app.put('/api/admin/airlines/:code', requireAdmin, wrap(async (req, res) => {
   const name = str(req.body.name, 80) || a.name;
   const color = /^#[0-9a-f]{6}$/i.test(req.body.color || '') ? req.body.color : a.color;
   const active = typeof req.body.active === 'boolean' ? req.body.active : a.active;
-  await query('UPDATE airlines SET name=$1, color=$2, active=$3 WHERE code=$4', [name, color, active, a.code]);
+  const country = req.body.country !== undefined ? str(req.body.country, 60) || null : a.country;
+  await query('UPDATE airlines SET name=$1, color=$2, active=$3, country=$4 WHERE code=$5', [name, color, active, country, a.code]);
   res.json({ ok: true });
 }));
 

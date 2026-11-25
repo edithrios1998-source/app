@@ -43,6 +43,32 @@ const AIRLINES = [
   ['EJ', 'Aerolínea Ejemplo', '#0b6e5f'],
   ['VD', 'Vuelos Demo', '#1d4ed8'],
 ];
+// Aerolíneas reales que operan en Latinoamérica: [código IATA, nombre, color, país].
+// Sus vuelos y horarios no se inventan: la agencia los carga en "Vuelos y horarios".
+const REAL_AIRLINES = [
+  ['AM', 'Aeroméxico', '#0b2343', 'México'],
+  ['Y4', 'Volaris', '#6b2c91', 'México'],
+  ['VB', 'Viva Aerobus', '#00843d', 'México'],
+  ['AV', 'Avianca', '#da291c', 'Colombia'],
+  ['P5', 'Wingo', '#5b2d8e', 'Colombia'],
+  ['CM', 'Copa Airlines', '#0032a0', 'Panamá'],
+  ['DM', 'Arajet', '#0086c8', 'República Dominicana'],
+  ['LA', 'LATAM Airlines', '#1b0088', 'Chile'],
+  ['H2', 'Sky Airline', '#27348b', 'Chile'],
+  ['JA', 'JetSMART', '#002f87', 'Chile'],
+  ['AR', 'Aerolíneas Argentinas', '#0f6fb5', 'Argentina'],
+  ['G3', 'GOL', '#e8590c', 'Brasil'],
+  ['AD', 'Azul', '#0033a0', 'Brasil'],
+  ['OB', 'Boliviana de Aviación', '#00529b', 'Bolivia'],
+  ['AA', 'American Airlines', '#0078d2', 'Estados Unidos'],
+  ['UA', 'United Airlines', '#005daa', 'Estados Unidos'],
+  ['DL', 'Delta Air Lines', '#c8102e', 'Estados Unidos'],
+  ['B6', 'JetBlue', '#003876', 'Estados Unidos'],
+  ['AC', 'Air Canada', '#d22630', 'Canadá'],
+  ['IB', 'Iberia', '#d7192d', 'España'],
+  ['UX', 'Air Europa', '#00347c', 'España'],
+];
+
 // [aerolínea, número, origen, destino, salida, duración (min), días (1=lun..7=dom), asientos, precio base USD]
 const ROUTES = [
   ['EJ', '101', 'MEX', 'CUN', '07:15', 130, '1234567', 150, 89],
@@ -162,6 +188,14 @@ async function init() {
   }
   if (!(await count('airlines'))) {
     for (const a of AIRLINES) await query('INSERT INTO airlines (code, name, color) VALUES ($1,$2,$3)', a);
+  }
+  await query('ALTER TABLE airlines ADD COLUMN IF NOT EXISTS country TEXT');
+  await query('ALTER TABLE airlines ADD COLUMN IF NOT EXISTS demo BOOLEAN');
+  await query("UPDATE airlines SET demo = (code IN ('EJ', 'VD')) WHERE demo IS NULL");
+  // Aerolíneas reales (se agregan una sola vez; la agencia puede desactivarlas o editarlas).
+  for (const [code, name, color, country] of REAL_AIRLINES) {
+    const { rows } = await query('SELECT 1 FROM airlines WHERE code = $1', [code]);
+    if (!rows.length) await query('INSERT INTO airlines (code, name, color, country, demo) VALUES ($1,$2,$3,$4,FALSE)', [code, name, color, country]);
   }
   if (!(await count('routes'))) {
     for (const r of ROUTES) {
