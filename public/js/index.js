@@ -50,8 +50,8 @@ const apBy = (c) => S.airports.find((a) => a.code === c);
   api('/api/airlines').then((list) => {
     $('#al-list').innerHTML = list.length ? list.map((x) => `<div class="al-card">
         <span class="al-logo al-big" style="background:${esc(x.color)}">${esc(x.code)}</span>
-        <div class="al-info"><b>${esc(x.name)}</b><span>${esc(x.country)}</span></div>
-        ${x.has_flights ? '<span class="badge b-emitido">Vuelos en línea</span>' : '<span class="badge b-vencido">Próximamente</span>'}
+        <div class="al-info"><b>${esc(x.name)}</b><span>${esc(x.country)}</span>
+          ${x.has_flights ? '<em class="al-tag on">● Vuelos en línea</em>' : '<em class="al-tag">Próximamente</em>'}</div>
       </div>`).join('') : '<div class="empty">Pronto agregaremos aerolíneas.</div>';
   }).catch(() => { $('#al-list').innerHTML = '<div class="empty">No se pudieron cargar las aerolíneas.</div>'; });
   if (qs.get('from') && qs.get('to')) $('#search').requestSubmit();
