@@ -8,6 +8,8 @@ const compression = require('compression');
 const bcrypt = require('bcryptjs');
 const { query, init } = require('./db');
 const payments = require('./payments');
+const wa = require('./whatsapp');
+const { createBot } = require('./bot');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -76,12 +78,14 @@ app.use((req, res, next) => {
 // CORS: la API solo se usa desde este mismo sitio. No se envían encabezados CORS, y las
 // solicitudes que cambian datos desde otro origen se rechazan (protección CSRF).
 app.use('/api', (req, res, next) => {
-  if (['GET', 'HEAD'].includes(req.method) || req.path === '/stripe/webhook') return next();
+  if (['GET', 'HEAD'].includes(req.method) || req.path === '/stripe/webhook' || req.path === '/whatsapp/webhook') return next();
   const origin = req.get('origin');
   if (origin && origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({ error: 'Origen no permitido.' });
   next();
 });
-app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300 }));
+// (Los avisos de WhatsApp llegan desde los servidores de Meta; tienen su propio límite por número en bot.js.)
+const apiLimit = rateLimit({ windowMs: 60 * 1000, max: 300 });
+app.use('/api', (req, res, next) => (req.path === '/whatsapp/webhook' ? next() : apiLimit(req, res, next)));
 const bookingLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, message: 'Hiciste muchas reservas seguidas. Espera un rato e intenta de nuevo.' });
 const customerLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Demasiados intentos. Espera 15 minutos e intenta de nuevo.' });
 app.post('/api/bookings', bookingLimit);
@@ -89,6 +93,7 @@ app.use(['/api/bookings/lookup', '/api/payments/confirm'], customerLimit);
 app.use(/^\/api\/bookings\/[^/]+\/(checkout|correct|seats)$/, customerLimit);
 
 app.use('/api/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }));
+app.use('/api/whatsapp/webhook', express.raw({ type: '*/*', limit: '1mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieSession({
   name: 'vl_sess', secret: process.env.SESSION_SECRET || 'dev-only-secret-change-me',
@@ -263,7 +268,7 @@ app.get('/api/auth/me', (req, res) => res.json({ user: req.session.user || null 
 // ---------- público ----------
 app.get('/api/config', wrap(async (req, res) => {
   const s = await getSettings();
-  res.json({ ...s, online_payments: payments.enabled(), max_pax: MAX_PAX, doc_types: DOC_TYPES, statuses: STATUS, today: todayStr(),
+  res.json({ ...s, online_payments: payments.enabled(), whatsapp_bot: wa.enabled(), max_pax: MAX_PAX, doc_types: DOC_TYPES, statuses: STATUS, today: todayStr(),
     fares: Object.entries(FARES).map(([code, f]) => ({ code, ...f })) });
 }));
 
@@ -291,9 +296,13 @@ app.get('/api/routes-map', wrap(async (req, res) => {
 }));
 
 app.get('/api/search', wrap(async (req, res) => {
-  const from = str(req.query.from, 3).toUpperCase(), to = str(req.query.to, 3).toUpperCase();
-  const date = str(req.query.date, 10);
-  const pax = Math.min(MAX_PAX, Math.max(1, Number(req.query.pax) || 1));
+  res.json(await searchFlights(str(req.query.from, 3), str(req.query.to, 3), str(req.query.date, 10), req.query.pax));
+}));
+
+// Búsqueda de vuelos (la usan el sitio y el bot de WhatsApp).
+async function searchFlights(fromIn, toIn, date, paxIn) {
+  const from = String(fromIn || '').toUpperCase(), to = String(toIn || '').toUpperCase();
+  const pax = Math.min(MAX_PAX, Math.max(1, Number(paxIn) || 1));
   if (!from || !to || from === to) throw new HttpError(400, 'Elige un origen y un destino distintos.');
   if (!isDate(date)) throw new HttpError(400, 'Fecha inválida.');
   if (date < todayStr()) throw new HttpError(400, 'La fecha ya pasó.');
@@ -318,8 +327,8 @@ app.get('/api/search', wrap(async (req, res) => {
       if (rows.some((x) => x.days.includes(String(weekday(d))))) next.push(d);
     }
   }
-  res.json({ from: ap[from], to: ap[to], date, pax, flights: out.filter((f) => f.seats_left >= 1), next_dates: next, has_route: rows.length > 0 });
-}));
+  return { from: ap[from], to: ap[to], date, pax, flights: out.filter((f) => f.seats_left >= pax), next_dates: next, has_route: rows.length > 0 };
+}
 
 function readPassengers(list, international) {
   if (!Array.isArray(list) || list.length < 1 || list.length > MAX_PAX) throw new HttpError(400, `Entre 1 y ${MAX_PAX} pasajeros.`);
@@ -417,9 +426,17 @@ app.get('/api/seatmap', wrap(async (req, res) => {
 }));
 
 app.post('/api/bookings', wrap(async (req, res) => {
+  const staff = req.session.user;
+  if (!staff && req.body.accept_terms !== true) throw new HttpError(400, 'Acepta los términos de uso y el aviso de privacidad para reservar.');
+  const b = await createBooking(req.body, { staff, origin: staff ? 'agencia' : 'web' });
+  res.status(201).json(staff ? b : publicBooking(b));
+}));
+
+// Crea una reserva pendiente de pago (sitio, panel o bot de WhatsApp). body: { segments, passengers, contact }.
+async function createBooking(body, { staff = null, origin = 'web' } = {}) {
   if (!payments.enabled()) throw new HttpError(503, 'Las ventas en línea estarán disponibles muy pronto. Gracias por tu paciencia.');
   await expireOld();
-  const segIn = Array.isArray(req.body.segments) ? req.body.segments.slice(0, 2) : [];
+  const segIn = Array.isArray(body.segments) ? body.segments.slice(0, 2) : [];
   if (!segIn.length) throw new HttpError(400, 'Elige al menos un vuelo.');
   const [ap, al, settings] = await Promise.all([airportMap(), airlineMap(), getSettings()]);
   const segs = [];
@@ -437,8 +454,8 @@ app.post('/api/bookings', wrap(async (req, res) => {
     if (b.date < a.date) throw new HttpError(400, 'El regreso no puede ser antes de la ida.');
   }
   const international = segs.some(({ r }) => ap[r.origin].country !== ap[r.destination].country);
-  const pax = readPassengers(req.body.passengers, international);
-  const c = req.body.contact || {};
+  const pax = readPassengers(body.passengers, international);
+  const c = body.contact || {};
   const contact = { name: str(c.name, 120), email: str(c.email, 120).toLowerCase(), phone: str(c.phone, 30) };
   if (contact.name.length < 3) throw new HttpError(400, 'Escribe el nombre de contacto.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email)) throw new HttpError(400, 'Correo de contacto inválido.');
@@ -455,13 +472,11 @@ app.post('/api/bookings', wrap(async (req, res) => {
   const seatsTotal = money(segs.reduce((t, s) => t + s.seatSel.reduce((a, x) => a + (x ? x.price : 0), 0), 0));
   const total = money(subtotal + taxes + seatsTotal);
   const code = await newCode();
-  const staff = req.session.user;
-  if (!staff && req.body.accept_terms !== true) throw new HttpError(400, 'Acepta los términos de uso y el aviso de privacidad para reservar.');
   const expires = new Date(Date.now() + settings.hold_hours * 3600 * 1000);
   const { rows } = await query(
     `INSERT INTO bookings (code, status, contact_name, contact_email, contact_phone, pax_count, subtotal, taxes, total, origin, created_by, expires_at, seats_total)
      VALUES ($1,'pendiente_pago',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [code, contact.name, contact.email, contact.phone, pax.length, subtotal, taxes, total, staff ? 'agencia' : 'web', staff ? staff.id : null, expires, seatsTotal]);
+    [code, contact.name, contact.email, contact.phone, pax.length, subtotal, taxes, total, origin, staff ? staff.id : null, expires, seatsTotal]);
   const id = rows[0].id;
   const segIds = [];
   for (const s of priced) {
@@ -479,10 +494,9 @@ app.post('/api/bookings', wrap(async (req, res) => {
   for (let i = 0; i < segs.length; i++) await saveSeats(id, segIds[i], paxIds, segs[i].seatSel);
   const seatNote = segs.map((s) => s.seatSel.filter(Boolean).map((x) => x.seat).join(', ')).filter(Boolean).join(' / ');
   await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
-    [id, 'pendiente_pago', (staff ? 'Reserva creada en agencia' : 'Reserva creada en línea') + (seatNote ? '. Asientos: ' + seatNote : ''), staff ? staff.name : null]);
-  const b = await loadBooking('id = $1', [id]);
-  res.status(201).json(staff ? b : publicBooking(b));
-}));
+    [id, 'pendiente_pago', ({ agencia: 'Reserva creada en agencia', whatsapp: 'Reserva creada por WhatsApp' }[origin] || 'Reserva creada en línea') + (seatNote ? '. Asientos: ' + seatNote : ''), staff ? staff.name : null]);
+  return loadBooking('id = $1', [id]);
+}
 
 app.post('/api/bookings/lookup', wrap(async (req, res) => {
   await expireOld();
@@ -805,7 +819,10 @@ async function settleOnlinePayment(session) {
     await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, status, problem + ' Revisar y reembolsar desde Stripe si aplica.']);
     return status;
   }
-  return recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref });
+  const result = await recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref });
+  // Reservas hechas por WhatsApp: aviso automático de boletos emitidos.
+  if (result === 'emitido' && b.origin === 'whatsapp') bot.notifyIssued(b.id).catch((e) => console.error('[whatsapp] aviso de pago', e.message));
+  return result;
 }
 
 // ---------- pago en línea ----------
@@ -820,6 +837,12 @@ app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
   if (!b || !last || !b.passengers.some((p) => norm(p.last_name) === last || norm(p.last_name).split(/\s+/).includes(last))) {
     throw new HttpError(404, 'No encontramos la reserva.');
   }
+  res.json({ url: await startCheckout(b, baseUrl(req)) });
+}));
+
+// Crea la página de pago de Stripe por el total pendiente y devuelve su enlace.
+async function startCheckout(b, base, via = 'en línea') {
+  if (!payments.enabled()) throw new HttpError(503, 'El pago en línea no está disponible en este momento. Intenta más tarde.');
   if (b.status !== 'pendiente_pago') throw new HttpError(400, `Esta reserva está "${b.status_label}" y no se puede pagar.`);
   // Siempre se cobra el total pendiente (no hay pagos parciales).
   const amount = b.balance;
@@ -827,16 +850,15 @@ app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
   // Stripe exige que la sesión expire entre 30 min y 24 h.
   const exp = new Date(Math.max(Date.now() + 31 * 60 * 1000, Math.min(new Date(b.expires_at).getTime(), Date.now() + 23.5 * 3600 * 1000)));
   const desc = b.segments.map((sg) => `${sg.flight_no} ${sg.origin}-${sg.destination} ${sg.date}`).join(' / ') + ` · ${b.pax_count} pasajero(s)`;
-  const base = baseUrl(req);
   const session = await payments.createCheckout({
     booking: b, amount, description: desc, expiresAt: exp,
     successUrl: `${base}/reserva?code=${b.code}&session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}/reserva?code=${b.code}&pago=cancelado`,
   });
   await query('UPDATE bookings SET stripe_session_id = $1 WHERE id = $2', [session.id, b.id]);
-  await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pendiente_pago', `El cliente inició el pago en línea (${fmt(amount)} USD)`]);
-  res.json({ url: session.url });
-}));
+  await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, 'pendiente_pago', `El cliente inició el pago ${via} (${fmt(amount)} USD)`]);
+  return session.url;
+}
 
 // Regreso desde Stripe: se verifica el pago directamente con Stripe antes de emitir.
 app.post('/api/payments/confirm', wrap(async (req, res) => {
@@ -1117,6 +1139,37 @@ app.put('/api/admin/users/:id', requireAdmin, wrap(async (req, res) => {
   }
   res.json({ ok: true });
 }));
+
+// ---------- bot de ventas por WhatsApp ----------
+const bot = createBot({
+  query, searchFlights, createBooking, startCheckout, loadBooking, findForCustomer, getSettings,
+  airports: async () => (await query('SELECT code, city, name, country FROM airports WHERE active = TRUE ORDER BY country, city')).rows,
+  routesMap: async () => {
+    const { rows } = await query(`SELECT DISTINCT r.origin, r.destination FROM routes r JOIN airlines a ON a.code = r.airline
+      WHERE r.active = TRUE AND a.active = TRUE`);
+    const m = {}; for (const r of rows) (m[r.origin] = m[r.origin] || []).push(r.destination);
+    return m;
+  },
+  baseUrl: () => (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, ''),
+  DOC_TYPES, MAX_PAX, todayStr, addDays, daysBetween, isDate, HttpError,
+});
+
+// Verificación del webhook al configurarlo en Meta (GET con hub.challenge).
+app.get('/api/whatsapp/webhook', (req, res) => {
+  const ok = req.query['hub.mode'] === 'subscribe' && process.env.WHATSAPP_VERIFY_TOKEN && req.query['hub.verify_token'] === process.env.WHATSAPP_VERIFY_TOKEN;
+  if (!ok) return res.status(403).send('Token inválido');
+  res.type('text/plain').send(String(req.query['hub.challenge'] || ''));
+});
+// Mensajes entrantes. Se valida la firma de Meta y se responde de inmediato; el bot procesa en segundo plano.
+app.post('/api/whatsapp/webhook', (req, res) => {
+  if (!wa.enabled()) return res.sendStatus(404);
+  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+  if (!wa.verifySignature(raw, req.get('x-hub-signature-256'), process.env.WHATSAPP_APP_SECRET)) return res.status(401).send('Firma inválida');
+  let body;
+  try { body = JSON.parse(raw.toString('utf8')); } catch (_) { return res.sendStatus(400); }
+  res.sendStatus(200);
+  bot.handleWebhook(body);
+});
 
 // Respaldo: descarga todas las tablas en JSON (sin contraseñas). Solo administradores.
 app.get('/api/admin/backup', requireAdmin, wrap(async (req, res) => {

@@ -37,6 +37,7 @@ Las aerolíneas "Aerolínea Ejemplo" y "Vuelos Demo" y sus horarios son datos de
 | `PGSSL` | `1` para conectar a Postgres con SSL (URL externa). |
 | `STRIPE_SECRET_KEY` | Clave secreta de Stripe (`sk_test_…` para pruebas, `sk_live_…` para cobrar). Sin ella no se pueden crear reservas. |
 | `STRIPE_WEBHOOK_SECRET` | Secreto del webhook (`whsec_…`) para confirmar pagos aunque el cliente cierre la ventana. |
+| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Bot de ventas por WhatsApp (opcional; ver abajo). |
 | `PUBLIC_URL` | URL pública de la app (ej. `https://vuelalatino.onrender.com`) para el regreso desde Stripe. |
 
 ## Instalar y correr en local
@@ -50,6 +51,25 @@ npm start              # http://localhost:3000
 ```
 
 Sin `DATABASE_URL` usa una base de datos en memoria (se borra al reiniciar). Las variables están descritas en `.env.example`; el archivo `.env` nunca se sube a git.
+
+## Bot de ventas por WhatsApp
+
+El cliente escribe a tu número de WhatsApp y el asistente lo guía: origen → destino → fecha → pasajeros → vuelo → tarifa → datos de cada pasajero → correo → resumen con el total. Al confirmar crea la reserva y manda el **enlace de pago de Stripe por el total** (vence en 1 h). Cuando el pago se confirma, el cliente recibe automáticamente por WhatsApp su confirmación con los números de boleto. También consulta reservas (código + apellido) y permite pagar una pendiente. Comandos: *menú* (empezar de nuevo), *cancelar*, *ayuda*. Las reservas aparecen en el panel con origen "WhatsApp".
+
+Usa la **API oficial de WhatsApp Business (Cloud API de Meta)**. Para activarlo:
+
+1. Crea una cuenta en business.facebook.com y una app en developers.facebook.com con el producto **WhatsApp**.
+2. Agrega y verifica el número de la empresa (no puede estar usándose en la app normal de WhatsApp).
+3. Crea un **usuario del sistema** con un token permanente con permisos `whatsapp_business_messaging`.
+4. En Render (servicio → Environment) agrega:
+   - `WHATSAPP_TOKEN`: el token permanente.
+   - `WHATSAPP_PHONE_NUMBER_ID`: el *Phone number ID* (no es el número de teléfono).
+   - `WHATSAPP_APP_SECRET`: el *App Secret* de la app (Configuración → Básica); valida que los mensajes vengan de Meta.
+   - `WHATSAPP_VERIFY_TOKEN`: una palabra secreta que tú inventes.
+5. En la app de Meta → WhatsApp → Configuración → Webhook: URL `https://vuelalatino.onrender.com/api/whatsapp/webhook`, el mismo *Verify token*, y suscríbete al campo **messages**.
+6. Pon el mismo número en *Agencia → Precios y plazos → WhatsApp* para que el botón del sitio abra la conversación con el bot.
+
+Meta cobra por conversación según el país (las que inicia el cliente tienen tarifa de servicio). Sin estas variables el bot está apagado y el webhook responde 404. Requiere también las claves de Stripe para cobrar.
 
 ## Pago en línea (Stripe)
 

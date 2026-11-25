@@ -54,7 +54,7 @@ async function loadBookings() {
   stats.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   $('#stats').innerHTML = stats.length ? stats.map((s) => `<div class="stat"><div class="muted small-txt">${esc(s.label)}</div><div class="n">${s.n}</div><div class="muted small-txt">${s.pax} pax · ${usd(s.total)}</div></div>`).join('') : '<div class="muted">Aún no hay reservas.</div>';
   $('#rows').innerHTML = rows.length ? rows.map((b) => `<tr class="click" data-id="${b.id}">
-    <td><b style="letter-spacing:1px">${esc(b.code)}</b><div class="muted small-txt">${b.origin === 'web' ? 'En línea' : 'Agencia'}</div></td>
+    <td><b style="letter-spacing:1px">${esc(b.code)}</b><div class="muted small-txt">${({ web: 'En línea', whatsapp: 'WhatsApp' })[b.origin] || 'Agencia'}</div></td>
     <td class="small-txt">${dt(b.created_at)}</td><td>${esc(b.contact_name)}</td>
     <td class="small-txt">${b.segments.map((s) => `<b>${esc(s.route)}</b> ${esc(s.flight)} · ${esc(dDate(s.date))}`).join('<br>')}</td>
     <td>${b.pax_count}</td><td>${usd(b.total)}${b.status === 'pendiente_pago' && b.paid_amount > 0 ? `<div class="small-txt" style="color:var(--ok)">Pagado ${usd(b.paid_amount)}</div>` : ''}</td>
@@ -325,6 +325,7 @@ async function loadSettings() {
   $('#s-tax').value = Math.round(s.tax_rate * 1000) / 10; $('#s-fee').value = s.service_fee; $('#s-hold').value = s.hold_hours;
   $('#s-std').value = s.seat_std; $('#s-front').value = s.seat_front; $('#s-exit').value = s.seat_exit;
   $('#s-wa').value = s.whatsapp ? '+' + s.whatsapp : '';
+  $('#wa-bot-status').innerHTML = cfg.whatsapp_bot ? '<b style="color:var(--ok)">● Bot de ventas por WhatsApp activo.</b> Los clientes pueden buscar, reservar y pagar escribiendo a tu número.' : '<b>○ Bot de ventas por WhatsApp apagado.</b> Se activa al poner las claves de Meta (WhatsApp Business) en Render; ver README.';
 }
 $('#set-f').addEventListener('submit', async (e) => {
   e.preventDefault();

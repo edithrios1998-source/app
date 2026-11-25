@@ -173,6 +173,10 @@ async function init() {
     await query('UPDATE bookings SET paid_amount = total WHERE id = $1', [b.id]);
   }
 
+  // Conversaciones del bot de WhatsApp (estado por número).
+  await query(`CREATE TABLE IF NOT EXISTS wa_sessions (
+    phone TEXT PRIMARY KEY, state TEXT NOT NULL, data TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+
   const count = async (t) => Number((await query(`SELECT COUNT(*)::int AS n FROM ${t}`)).rows[0].n);
   if (!(await count('airports'))) {
     for (const a of AIRPORTS) await query('INSERT INTO airports (code, city, name, country, utc_offset) VALUES ($1,$2,$3,$4,$5)', a);
