@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const cookieSession = require('cookie-session');
+const compression = require('compression');
 const bcrypt = require('bcryptjs');
 const { query, init } = require('./db');
 const payments = require('./payments');
@@ -28,20 +29,75 @@ const STATUS = {
 const DOC_TYPES = ['Pasaporte', 'INE', 'DNI', 'Cédula de identidad', 'Otro documento oficial'];
 const MAX_PAX = 9;
 
+// En producción la clave de sesión es obligatoria: sin ella cualquiera podría falsificar sesiones.
+if (IS_PROD && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
+  console.error('Falta SESSION_SECRET (mínimo 32 caracteres) en las variables de entorno.');
+  process.exit(1);
+}
+
+// Límite de solicitudes por IP en una ventana de tiempo (en memoria).
+function rateLimit({ windowMs, max, message }) {
+  const hits = new Map();
+  setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now - v.t > windowMs) hits.delete(k); }, windowMs).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    let h = hits.get(req.ip);
+    if (!h || now - h.t > windowMs) { h = { n: 0, t: now }; hits.set(req.ip, h); }
+    if (++h.n > max) {
+      res.set('Retry-After', String(Math.ceil((h.t + windowMs - now) / 1000)));
+      console.warn(`[rate-limit] ${req.ip} ${req.method} ${req.originalUrl}`);
+      return res.status(429).json({ error: message || 'Demasiadas solicitudes. Espera unos minutos e intenta de nuevo.' });
+    }
+    next();
+  };
+}
+
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use(compression());
+app.use((req, res, next) => {
+  // Solo HTTPS en producción (Render pone el protocolo original en X-Forwarded-Proto).
+  if (IS_PROD && req.get('x-forwarded-proto') === 'http') return res.redirect(301, 'https://' + req.get('host') + req.originalUrl);
+  res.set({
+    'Content-Security-Policy': [
+      "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'",
+      "form-action 'self'", "frame-ancestors 'none'", "base-uri 'self'", "object-src 'none'",
+    ].join('; '),
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+  });
+  if (IS_PROD) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+// CORS: la API solo se usa desde este mismo sitio. No se envían encabezados CORS, y las
+// solicitudes que cambian datos desde otro origen se rechazan (protección CSRF).
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD'].includes(req.method) || req.path === '/stripe/webhook') return next();
+  const origin = req.get('origin');
+  if (origin && origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({ error: 'Origen no permitido.' });
+  next();
+});
+app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300 }));
+const bookingLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, message: 'Hiciste muchas reservas seguidas. Espera un rato o acude a la agencia.' });
+const customerLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Demasiados intentos. Espera 15 minutos e intenta de nuevo.' });
+app.post('/api/bookings', bookingLimit);
+app.use(['/api/bookings/lookup', '/api/payments/confirm'], customerLimit);
+app.use(/^\/api\/bookings\/[^/]+\/(checkout|correct|seats)$/, customerLimit);
+
 app.use('/api/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieSession({
   name: 'vl_sess', secret: process.env.SESSION_SECRET || 'dev-only-secret-change-me',
   httpOnly: true, sameSite: 'lax', secure: IS_PROD, maxAge: 12 * 60 * 60 * 1000,
 }));
-app.use((req, res, next) => {
-  res.set('X-Content-Type-Options', 'nosniff');
-  res.set('X-Frame-Options', 'DENY');
-  res.set('Referrer-Policy', 'same-origin');
-  next();
-});
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+app.use(express.static(path.join(__dirname, 'public'), {
+  extensions: ['html'],
+  setHeaders: (res, file) => res.set('Cache-Control', /\.html$/.test(file) ? 'no-cache' : 'public, max-age=600'),
+}));
 
 // ---------- utilidades ----------
 const money = (n) => Math.round(Number(n) * 100) / 100;
@@ -399,6 +455,7 @@ app.post('/api/bookings', wrap(async (req, res) => {
   const total = money(subtotal + taxes + seatsTotal);
   const code = await newCode();
   const staff = req.session.user;
+  if (!staff && req.body.accept_terms !== true) throw new HttpError(400, 'Acepta los términos de uso y el aviso de privacidad para reservar.');
   const expires = new Date(Date.now() + settings.hold_hours * 3600 * 1000);
   const { rows } = await query(
     `INSERT INTO bookings (code, status, contact_name, contact_email, contact_phone, pax_count, subtotal, taxes, total, origin, created_by, expires_at, seats_total)
@@ -953,10 +1010,10 @@ app.get('/api/staff/payments', requireStaff, wrap(async (req, res) => {
   const { rows: monthRows } = await query('SELECT COALESCE(SUM(amount), 0) AS t FROM payments WHERE created_at >= $1', [new Date(today.slice(0, 7) + '-01T00:00:00Z')]);
   const { rows: bal } = await query(
     `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-     WHERE status = 'pendiente_pago' AND paid_amount > 0 ORDER BY expires_at`);
+     WHERE status = 'pendiente_pago' AND paid_amount > 0 ORDER BY expires_at LIMIT 500`);
   const { rows: stale } = await query(
     `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-     WHERE status = 'vencido' AND paid_amount > 0 ORDER BY expires_at DESC`);
+     WHERE status = 'vencido' AND paid_amount > 0 ORDER BY expires_at DESC LIMIT 500`);
   const mapBal = (b) => ({ id: b.id, code: b.code, contact_name: b.contact_name, contact_phone: b.contact_phone, total: Number(b.total),
     paid: Number(b.paid_amount), balance: money(Number(b.total) - Number(b.paid_amount)), expires_at: b.expires_at });
   res.json({ from, to, method, rows: list, total: money(list.reduce((t, p) => t + p.amount, 0)), by_method: Object.values(byMethod),
@@ -972,7 +1029,7 @@ app.get('/api/staff/calendar', requireStaff, wrap(async (req, res) => {
   const [{ rows: dep }, { rows: exp }, { rows: pay }, { rows: ap }, { rows: tk }] = await Promise.all([
     query(`SELECT s.flight_date, s.dep_time, s.origin, s.destination, s.airline, s.flight_no, b.id, b.code, b.pax_count, b.status, b.contact_name
       FROM segments s JOIN bookings b ON b.id = s.booking_id
-      WHERE s.flight_date >= $1 AND s.flight_date <= $2 AND b.status IN ('emitido', 'pendiente_pago', 'pago_revision') ORDER BY s.flight_date, s.dep_time`, [first, last]),
+      WHERE s.flight_date >= $1 AND s.flight_date <= $2 AND b.status IN ('emitido', 'pendiente_pago', 'pago_revision') ORDER BY s.flight_date, s.dep_time LIMIT 3000`, [first, last]),
     query(`SELECT id, code, contact_name, total, paid_amount, expires_at FROM bookings
       WHERE status = 'pendiente_pago' AND expires_at >= $1 AND expires_at < $2 ORDER BY expires_at`, [t0, t1]),
     query('SELECT amount, created_at FROM payments WHERE created_at >= $1 AND created_at < $2', [t0, t1]),
@@ -1050,6 +1107,7 @@ app.post('/api/appointments', wrap(async (req, res) => {
   const at = apptAttempts.get(req.ip) || { n: 0, t: now };
   if (now - at.t > 3600 * 1000) { at.n = 0; at.t = now; }
   if (at.n >= 5) throw new HttpError(429, 'Ya agendaste varias citas. Si necesitas otra, llama a la agencia.');
+  if (req.body.accept_privacy !== true) throw new HttpError(400, 'Acepta el aviso de privacidad para agendar.');
   const a = readAppt(req.body);
   const slot = (await slotsFor(a.date)).find((s) => s.time === a.time);
   if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario se acaba de llenar. Elige otro.');
@@ -1068,15 +1126,15 @@ app.get('/api/staff/agenda', requireStaff, wrap(async (req, res) => {
   const soon = new Date(Date.now() + 24 * 3600 * 1000), in3 = new Date(Date.now() + 3 * 24 * 3600 * 1000);
   const [{ rows: ap }, { rows: tk }, { rows: users }, { rows: exp }, { rows: bal }, { rows: stale }, { rows: rev }, { rows: unconf }, { rows: corr }, slots] = await Promise.all([
     query('SELECT * FROM appointments WHERE appt_date = $1 ORDER BY appt_time, id', [date]),
-    query(`SELECT * FROM tasks WHERE due_date = $1 OR (done = FALSE AND due_date < $1) ORDER BY done, due_date, due_time, id`, [date]),
+    query(`SELECT * FROM tasks WHERE due_date = $1 OR (done = FALSE AND due_date < $1) ORDER BY done, due_date, due_time, id LIMIT 300`, [date]),
     query('SELECT id, name FROM users WHERE active = TRUE ORDER BY name'),
     query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-      WHERE status = 'pendiente_pago' AND expires_at < $1 AND (paid_amount IS NULL OR paid_amount = 0) ORDER BY expires_at`, [soon]),
+      WHERE status = 'pendiente_pago' AND expires_at < $1 AND (paid_amount IS NULL OR paid_amount = 0) ORDER BY expires_at LIMIT 100`, [soon]),
     query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-      WHERE status = 'pendiente_pago' AND paid_amount > 0 AND expires_at < $1 ORDER BY expires_at`, [in3]),
-    query("SELECT id, code, contact_name, contact_phone, total, paid_amount FROM bookings WHERE status = 'vencido' AND paid_amount > 0"),
-    query("SELECT id, code, contact_name, contact_phone FROM bookings WHERE status = 'pago_revision'"),
-    query("SELECT * FROM appointments WHERE status = 'pendiente' AND appt_date >= $1 ORDER BY appt_date, appt_time", [todayStr()]),
+      WHERE status = 'pendiente_pago' AND paid_amount > 0 AND expires_at < $1 ORDER BY expires_at LIMIT 100`, [in3]),
+    query("SELECT id, code, contact_name, contact_phone, total, paid_amount FROM bookings WHERE status = 'vencido' AND paid_amount > 0 LIMIT 100"),
+    query("SELECT id, code, contact_name, contact_phone FROM bookings WHERE status = 'pago_revision' LIMIT 100"),
+    query("SELECT * FROM appointments WHERE status = 'pendiente' AND appt_date >= $1 ORDER BY appt_date, appt_time LIMIT 100", [todayStr()]),
     query("SELECT COUNT(*)::int AS n FROM correction_requests WHERE status = 'pendiente'"),
     slotsFor(date),
   ]);
@@ -1282,14 +1340,36 @@ app.put('/api/admin/users/:id', requireAdmin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Respaldo: descarga todas las tablas en JSON (sin contraseñas). Solo administradores.
+app.get('/api/admin/backup', requireAdmin, wrap(async (req, res) => {
+  const tables = ['settings', 'airports', 'airlines', 'routes', 'bookings', 'segments', 'passengers', 'seat_assignments',
+    'payments', 'correction_requests', 'booking_events', 'appointments', 'tasks'];
+  const data = { created_at: new Date().toISOString(), app: 'VuelaLatino', tables: {} };
+  for (const t of tables) data.tables[t] = (await query(`SELECT * FROM ${t} ORDER BY 1`)).rows;
+  data.tables.users = (await query('SELECT id, username, name, role, active, created_at FROM users ORDER BY id')).rows;
+  console.log(`[respaldo] descargado por ${req.session.user.username}`);
+  res.set('Content-Disposition', `attachment; filename="vuelalatino-respaldo-${todayStr()}.json"`);
+  res.json(data);
+}));
+
 app.get('/healthz', (req, res) => res.send('ok'));
 app.use('/api', (req, res) => res.status(404).json({ error: 'No encontrado.' }));
+// Página 404 para cualquier otra ruta.
+app.use((req, res) => res.status(404).sendFile(path.join(__dirname, 'public', '404.html')));
 app.use((err, req, res, next) => {
+  const isApi = req.path.startsWith('/api');
   if (err instanceof HttpError) return res.status(err.code).json({ error: err.message });
-  if (err.stripe) { console.error('Stripe:', err.message); return res.status(502).json({ error: 'No se pudo conectar con el procesador de pagos. Intenta de nuevo o paga en la agencia.' }); }
-  console.error(err);
-  res.status(500).json({ error: 'Error interno. Intenta de nuevo.' });
+  if (err.stripe) { console.error('[stripe]', err.message); return res.status(502).json({ error: 'No se pudo conectar con el procesador de pagos. Intenta de nuevo o paga en la agencia.' }); }
+  // Errores del cliente (JSON mal formado, cuerpo muy grande): sin detalles técnicos.
+  if (err.status >= 400 && err.status < 500) {
+    return res.status(err.status).json({ error: err.status === 413 ? 'Los datos enviados son demasiado grandes.' : 'Solicitud inválida.' });
+  }
+  const ref = crypto.randomBytes(4).toString('hex');
+  console.error(`[error ${ref}] ${new Date().toISOString()} ${req.method} ${req.originalUrl}\n`, err);
+  if (isApi) return res.status(500).json({ error: `Error interno. Intenta de nuevo (referencia ${ref}).` });
+  res.status(500).sendFile(path.join(__dirname, 'public', '500.html'));
 });
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
 
 init().then(() => app.listen(PORT, () => console.log(`Servidor listo en http://localhost:${PORT}`)))
   .catch((e) => { console.error('No se pudo iniciar la base de datos', e); process.exit(1); });

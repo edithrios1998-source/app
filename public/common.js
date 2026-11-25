@@ -38,8 +38,33 @@ function renderHeader(active) {
     <button class="secondary small menu-btn" id="menubtn" aria-label="Menú">${icon('menu', 'ico-sm')}</button>
   </div>`;
   document.body.prepend(h);
-  $('#menubtn').addEventListener('click', () => $('#mainnav').classList.toggle('open'));
+  $('#menubtn').addEventListener('click', () => {
+    const open = $('#mainnav').classList.toggle('open');
+    $('#menubtn').setAttribute('aria-expanded', String(open));
+  });
+  const f = $('footer .wrap');
+  if (f) f.insertAdjacentHTML('beforeend', '<span class="legal"><a href="/privacidad">Aviso de privacidad</a> · <a href="/terminos">Términos de uso</a></span>');
 }
+
+// Botones "Imprimir" (sin código en línea, por la política de seguridad CSP).
+document.addEventListener('click', (e) => { if (e.target.closest('[data-print]')) window.print(); });
+// Escape cierra la ventana emergente abierta.
+document.addEventListener('keydown', (e) => {
+  const m = $('#modal');
+  if (e.key === 'Escape' && m && !m.classList.contains('hidden')) m.classList.add('hidden');
+});
+// Accesibilidad: asocia cada <label> con el campo que le sigue, también en contenido que se dibuja después.
+let labelSeq = 0, labelQueued = false;
+function linkLabels() {
+  labelQueued = false;
+  $$('label:not([for])').forEach((l) => {
+    if (l.querySelector('input,select,textarea')) return;
+    const el = l.nextElementSibling;
+    if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) { if (!el.id) el.id = 'fld' + (++labelSeq); l.htmlFor = el.id; }
+  });
+}
+new MutationObserver(() => { if (!labelQueued) { labelQueued = true; queueMicrotask(linkLabels); } }).observe(document.documentElement, { childList: true, subtree: true });
+linkLabels();
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -60,6 +85,14 @@ function showMsg(el, text, kind = 'error') {
   el.classList.remove('hidden');
 }
 function hideMsg(el) { if (el) el.classList.add('hidden'); }
+// Aviso flotante breve (errores inesperados, confirmaciones).
+function toast(text, kind = 'error') {
+  let t = $('#toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
+  t.className = 'alert ' + kind + ' toast';
+  t.innerHTML = icon(kind === 'ok' ? 'check' : 'info', 'ico-sm') + '<span>' + esc(text) + '</span>';
+  clearTimeout(t._h); t._h = setTimeout(() => t.remove(), 6000);
+}
 
 const alLogo = (a) => `<span class="al-logo" style="background:${esc(a.color)}">${esc(a.code)}</span>`;
 const nextDay = (o) => (o > 0 ? `<sup>+${o}</sup>` : o < 0 ? `<sup>${o}</sup>` : '');

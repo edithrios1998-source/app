@@ -35,18 +35,23 @@ Las aerolíneas "Aerolínea Ejemplo" y "Vuelos Demo" y sus horarios son datos de
 |---|---|
 | `DATABASE_URL` | PostgreSQL. Si falta, usa una base en memoria (solo pruebas). |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | Crea el primer administrador cuando la base está vacía. |
-| `SESSION_SECRET` | Firma de la cookie de sesión. |
+| `SESSION_SECRET` | Firma de la cookie de sesión. **Obligatoria en producción** (mínimo 32 caracteres); sin ella el servidor no arranca. |
 | `PGSSL` | `1` para conectar a Postgres con SSL (URL externa). |
 | `STRIPE_SECRET_KEY` | Clave secreta de Stripe (`sk_test_…` para pruebas, `sk_live_…` para cobrar). Sin ella, el pago en línea se oculta. |
 | `STRIPE_WEBHOOK_SECRET` | Secreto del webhook (`whsec_…`) para confirmar pagos aunque el cliente cierre la ventana. |
 | `PUBLIC_URL` | URL pública de la app (ej. `https://vuelalatino.onrender.com`) para el regreso desde Stripe. |
 
-## Correr en local
+## Instalar y correr en local
+
+Requisitos: Node.js 20 o superior.
 
 ```bash
 npm install
-npm start   # http://localhost:3000
+cp .env.example .env   # y llena ADMIN_PASSWORD y SESSION_SECRET
+npm start              # http://localhost:3000
 ```
+
+Sin `DATABASE_URL` usa una base de datos en memoria (se borra al reiniciar). Las variables están descritas en `.env.example`; el archivo `.env` nunca se sube a git.
 
 ## Pago en línea (Stripe)
 
@@ -56,6 +61,24 @@ npm start   # http://localhost:3000
 4. Prueba con la tarjeta 4242 4242 4242 4242 (cualquier fecha futura y CVC). Cuando todo funcione, cambia a las claves `live`.
 
 Los reembolsos se hacen desde el panel de Stripe.
+
+## Seguridad
+
+- **Secretos:** claves y contraseñas solo en variables de entorno (`.env` en local, panel de Render en producción). `.env` y `.env.*` están en `.gitignore`.
+- **Validación en el servidor:** toda entrada se valida en la API (tipos, formatos, longitudes máximas, fechas, montos). Cuerpo JSON máximo de 100 KB; las listas tienen tope de registros (`LIMIT`). La app no recibe archivos.
+- **XSS:** todo texto del usuario se escapa antes de mostrarse (`esc()`); no hay scripts ni manejadores en línea (el código está en `public/js/`) y se envía una **Content Security Policy** con `script-src 'self'`.
+- **SQL:** solo consultas parametrizadas (`$1, $2…`).
+- **Permisos:** las rutas `/api/staff/*` exigen sesión del personal y `/api/admin/*` rol de administrador. El cliente solo ve su reserva con código + apellido, con documentos ocultos.
+- **Límites de solicitudes por IP:** 300/min en la API; 10 intentos de login por 15 min; 60 consultas de reserva/pago por 15 min; 20 reservas por hora; 5 citas por hora.
+- **Encabezados:** HSTS y redirección a HTTPS en producción, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`.
+- **CORS:** no se habilita; la API solo responde a este mismo sitio y rechaza solicitudes que cambian datos desde otro origen.
+- **Dependencias:** revisar con `npm audit` (0 vulnerabilidades al 25/11/2026).
+
+## Errores, registros y respaldos
+
+- Páginas propias de **404** y **500**; la API responde mensajes en español sin detalles técnicos. Los errores internos se registran en la consola del servidor (logs de Render) con una referencia que también ve el usuario.
+- **Respaldo:** en el panel, *Precios y plazos → Descargar respaldo* (solo administradores) baja un JSON con todas las tablas, sin contraseñas. Hazlo con regularidad: la base gratuita de Render **no tiene respaldos automáticos** (los planes de pago sí).
+- **Legal:** `/privacidad` (aviso de privacidad) y `/terminos` (términos de uso) son un modelo general; revísalos con un abogado y completa los datos de la empresa. El sitio solo usa una cookie técnica de sesión para el personal, por lo que no requiere aviso de cookies.
 
 ## Deploy
 

@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /personal
+Disallow: /api/
+Sitemap: https://vuelalatino.onrender.com/sitemap.xml
