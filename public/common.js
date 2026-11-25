@@ -43,7 +43,7 @@ function renderHeader(active) {
     $('#menubtn').setAttribute('aria-expanded', String(open));
   });
   const f = $('footer .wrap');
-  if (f) f.insertAdjacentHTML('beforeend', '<span class="legal"><a href="/privacidad">Aviso de privacidad</a> · <a href="/terminos">Términos de uso</a></span>');
+  if (f) f.insertAdjacentHTML('beforeend', '<span class="legal">Contacto: <a href="mailto:vuelalatino@yahoo.com">vuelalatino@yahoo.com</a> · <a href="/privacidad">Aviso de privacidad</a> · <a href="/terminos">Términos de uso</a></span>');
 }
 
 // Botones "Imprimir" (sin código en línea, por la política de seguridad CSP).
