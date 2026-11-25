@@ -194,11 +194,18 @@ async function init() {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, r);
     }
   }
-  const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20',
+  const defaults = { tax_rate: '0.16', hold_hours: '1', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20',
     whatsapp: '' };
   for (const [k, v] of Object.entries(defaults)) {
     const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', [k]);
     if (!rows.length) await query('INSERT INTO settings (key, value) VALUES ($1,$2)', [k, v]);
+  }
+  // Cambio único (25/11/2026): como el pago es inmediato, el plazo para pagar pasa a 1 hora.
+  // Se aplica una sola vez; después la agencia puede cambiarlo en "Precios y plazos".
+  const { rows: m1 } = await query("SELECT 1 FROM settings WHERE key = 'migr_hold_1h'");
+  if (!m1.length) {
+    await query("UPDATE settings SET value = '1' WHERE key = 'hold_hours'");
+    await query("INSERT INTO settings (key, value) VALUES ('migr_hold_1h', 'hecho')");
   }
   if (!(await count('users'))) {
     const username = process.env.ADMIN_USER || 'admin';
