@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/styles.css?v=8">
+<link rel="stylesheet" href="/styles.css?v=9">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="theme-color" content="#1747b8">
 </head>
@@ -56,7 +56,7 @@
       <div class="stats" id="pay-stats"></div>
       <div class="card">
         <div class="modal-head" style="flex-wrap:wrap"><div><h2>Pagos recibidos</h2>
-          <p class="muted small-txt" style="margin:0">Cada pago y abono recibido en línea.</p></div>
+          <p class="muted small-txt" style="margin:0">Cada pago recibido en línea.</p></div>
           <button class="secondary small" id="pay-csv">Descargar CSV</button></div>
         <div class="toolbar" style="margin-top:12px">
           <div><label for="pf">Desde</label><input id="pf" type="date"></div>
@@ -65,16 +65,6 @@
         </div>
         <div class="chips" id="pay-methods"></div>
         <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Reserva</th><th>Cliente</th><th>Forma de pago</th><th>Registró</th><th style="text-align:right">Monto</th></tr></thead><tbody id="pay-rows"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <h2>Saldos por cobrar</h2>
-        <p class="muted small-txt" style="margin:0">Reservas apartadas con anticipo. Si no liquidan antes de la fecha límite, la reserva vence.</p>
-        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Fecha límite</th><th></th></tr></thead><tbody id="bal-rows"><tr><td colspan="8" class="muted">Cargando…</td></tr></tbody></table></div>
-      </div>
-      <div class="card hidden" style="margin-top:16px" id="stale-card">
-        <h2>Vencidas con dinero recibido</h2>
-        <p class="muted small-txt" style="margin:0">Contacta al cliente para reembolsar o hacer una reserva nueva. Al resolver, un administrador cancela la reserva para cerrarla.</p>
-        <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Cliente</th><th>Total</th><th>Pagado</th><th></th></tr></thead><tbody id="stale-rows"></tbody></table></div>
       </div>
     </section>
 
@@ -156,12 +146,6 @@
             <div><label for="s-exit">Salida de emergencia</label><input id="s-exit" type="number" step="0.01" min="0"></div>
           </div>
           <p class="hint">Básica paga cualquier asiento que elija · Clásica: estándar sin costo · Flexible: todos sin costo.</p>
-          <h3>Pagos en abonos</h3>
-          <div class="row3">
-            <div><label for="s-dep">Anticipo mínimo (%)</label><input id="s-dep" type="number" step="1" min="5" max="100"></div>
-            <div><label for="s-fpd">Liquidar antes del vuelo (días)</label><input id="s-fpd" type="number" min="1" max="90"></div>
-          </div>
-          <p class="hint">Con el anticipo la reserva queda apartada hasta esa fecha. Si el vuelo sale antes, se paga completa. Pon 100 % para no aceptar abonos.</p>
           <h3>WhatsApp</h3>
           <div class="row"><div><label for="s-wa">Número de WhatsApp de la empresa</label><input id="s-wa" type="tel" placeholder="+52 55 1234 5678"></div></div>
           <p class="hint">Con código de país. Si lo llenas, el sitio muestra el botón “Escríbenos por WhatsApp”. Déjalo vacío para ocultarlo.</p>
@@ -194,7 +178,7 @@
 </main>
 <div class="modal-bg hidden" id="modal"><div class="modal" id="mb"></div></div>
 
-<script src="/common.js?v=8"></script>
-<script src="/js/personal.js?v=8"></script>
+<script src="/common.js?v=9"></script>
+<script src="/js/personal.js?v=9"></script>
 </body>
 </html>

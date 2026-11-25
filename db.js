@@ -155,7 +155,7 @@ async function init() {
     id SERIAL PRIMARY KEY, booking_id INTEGER NOT NULL, status TEXT NOT NULL, note TEXT, user_name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
 
-  // Pagos (cada cobro o abono) y saldo pagado por reserva.
+  // Pagos recibidos y monto pagado por reserva.
   await query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid_amount NUMERIC');
   await query('UPDATE bookings SET paid_amount = 0 WHERE paid_amount IS NULL');
   await query(`CREATE TABLE IF NOT EXISTS payments (
@@ -195,7 +195,7 @@ async function init() {
     }
   }
   const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20',
-    deposit_pct: '0.3', full_pay_days: '15', whatsapp: '' };
+    whatsapp: '' };
   for (const [k, v] of Object.entries(defaults)) {
     const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', [k]);
     if (!rows.length) await query('INSERT INTO settings (key, value) VALUES ($1,$2)', [k, v]);

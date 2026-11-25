@@ -66,17 +66,14 @@ async function openBooking(id) {
   const b = await api('/api/staff/bookings/' + id);
   const admin = me.role === 'admin';
   const canCancel = (b.status === 'pendiente_pago' && (!b.paid_amount || admin)) || (['emitido', 'pago_revision'].includes(b.status) && admin) || (b.status === 'vencido' && b.paid_amount > 0 && admin);
-  const dep = b.deposit;
   const canFix = ['pendiente_pago', 'emitido', 'pago_revision'].includes(b.status);
   $('#mb').innerHTML = `<div class="modal-head no-print" style="margin-bottom:12px"><h2 style="margin:0">Reserva ${esc(b.code)}</h2><button class="secondary small" id="mclose">Cerrar</button></div>
     ${bookingHtml(b, { staff: true })}
     <div class="card no-print" style="margin-top:14px"><h2>Historial</h2><ul class="timeline">${b.events.map((e) => `<li><b>${esc(e.label)}</b>${e.note ? ' — ' + esc(e.note) : ''}<br><span class="muted small-txt">${dt(e.at)}${e.user_name ? ' · ' + esc(e.user_name) : ''}</span></li>`).join('')}</ul></div>
     <div class="card no-print" style="margin-top:14px">
       ${b.status === 'pendiente_pago' ? `<h2>Pago</h2>
-        <div class="pay-sum"><div><span>Total</span><b>${usd(b.total)}</b></div><div><span>Pagado</span><b>${usd(b.paid_amount)}</b></div><div class="due"><span>Saldo</span><b>${usd(b.balance)}</b></div></div>
-        <p class="muted small-txt" style="margin:8px 0 0">${dep && dep.allowed
-          ? `Acepta abonos: ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo <b>${usd(dep.min)}</b>. El saldo se liquida antes del <b>${esc(dLong(dep.deadline))}</b>.`
-          : 'Esta reserva se paga completa (el vuelo está cerca o no admite abonos).'} El cliente paga en línea desde Mi reserva; los boletos se emiten solos al completar el pago.</p>` : ''}
+        <div class="pay-sum"><div><span>Total</span><b>${usd(b.total)}</b></div><div><span>Pagado</span><b>${usd(b.paid_amount)}</b></div><div class="due"><span>Por pagar</span><b>${usd(b.balance)}</b></div></div>
+        <p class="muted small-txt" style="margin:8px 0 0">El cliente paga el total en línea; los boletos se emiten solos al completar el pago.</p>` : ''}
       <div class="alert error hidden" id="merr"></div>
       <div class="row" style="margin-top:12px">
         <button class="secondary" data-print>Imprimir</button>
@@ -121,7 +118,7 @@ function customerWaText(b) {
   const link = location.origin + '/reserva?code=' + b.code;
   if (b.status === 'pendiente_pago') {
     const due = b.balance ?? (b.total - (b.paid_amount || 0));
-    return `Hola ${first}, te escribimos de VuelaLatino sobre tu reserva ${b.code}${route ? ' (' + route + ')' : ''}. ${b.paid_amount > 0 ? 'Saldo pendiente' : 'Total'}: ${usd(due)} USD. Puedes pagar en línea antes del ${dt(b.expires_at)} aquí: ${link}`;
+    return `Hola ${first}, te escribimos de VuelaLatino sobre tu reserva ${b.code}${route ? ' (' + route + ')' : ''}. Total: ${usd(due)} USD. Puedes pagar en línea antes del ${dt(b.expires_at)} aquí: ${link}`;
   }
   if (b.status === 'emitido') return `Hola ${first}, tus boletos de la reserva ${b.code}${route ? ' (' + route + ')' : ''} están emitidos. Consulta tu itinerario aquí: ${link}`;
   return `Hola ${first}, te escribimos de VuelaLatino sobre tu reserva ${b.code}.`;
@@ -139,21 +136,14 @@ async function loadPayments() {
   if (!$('#pf').value) { $('#pf').value = addDays(cfg.today, -30); $('#pt').value = cfg.today; }
   const p = payData = await api('/api/staff/payments?' + new URLSearchParams({ from: $('#pf').value, to: $('#pt').value, method: $('#pmf').value }));
   if ($('#pmf').options.length === 1) $('#pmf').innerHTML += p.methods.map((m) => `<option>${esc(m)}</option>`).join('');
-  const owed = p.balances.reduce((t, b) => t + b.balance, 0);
   $('#pay-stats').innerHTML = [['Cobrado hoy', p.summary.day], ['Esta semana', p.summary.week], ['Este mes', p.summary.month]]
-    .map(([t, v]) => `<div class="stat"><div class="muted small-txt">${t}</div><div class="n">${usd(v)}</div></div>`).join('')
-    + `<div class="stat"><div class="muted small-txt">Saldos por cobrar</div><div class="n">${usd(owed)}</div><div class="muted small-txt">${p.balances.length} reserva${p.balances.length === 1 ? '' : 's'}</div></div>`;
+    .map(([t, v]) => `<div class="stat"><div class="muted small-txt">${t}</div><div class="n">${usd(v)}</div></div>`).join('');
   $('#pay-methods').innerHTML = `<span class="chip"><b>Total del periodo: ${usd(p.total)}</b> · ${p.rows.length} pago${p.rows.length === 1 ? '' : 's'}</span>`
     + p.by_method.map((m) => `<span class="chip">${esc(m.method)}: <b>${usd(m.total)}</b> (${m.n})</span>`).join('');
   $('#pay-rows').innerHTML = p.rows.map((x) => `<tr class="click" data-id="${x.booking_id}"><td class="small-txt">${dt(x.at)}</td>
     <td><b style="letter-spacing:1px">${esc(x.code)}</b><div><span class="badge b-${esc(x.status)}">${esc(x.status_label)}</span></div></td><td>${esc(x.contact_name)}</td>
     <td>${esc(x.method)}${x.note ? `<div class="muted small-txt">${esc(x.note)}</div>` : ''}</td><td class="small-txt">${esc(x.user_name || 'En línea')}</td>
     <td style="text-align:right"><b>${usd(x.amount)}</b></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No hay pagos en estas fechas.</td></tr>';
-  const balRow = (b, withDue) => `<tr class="click" data-id="${b.id}"><td><b style="letter-spacing:1px">${esc(b.code)}</b></td><td>${esc(b.contact_name)}<div class="muted small-txt">${esc(b.contact_phone)}</div></td>
-    <td>${usd(b.total)}</td><td>${usd(b.paid)}</td>${withDue ? `<td><b>${usd(b.balance)}</b></td><td class="small-txt">${dt(b.expires_at)}</td>` : ''}<td>${waCustomerBtn({ ...b, status: withDue ? 'pendiente_pago' : 'vencido', paid_amount: b.paid }, 'wa-mini')}</td></tr>`;
-  $('#bal-rows').innerHTML = p.balances.map((b) => balRow(b, true)).join('') || '<tr><td colspan="6" class="muted">No hay saldos pendientes.</td></tr>';
-  $('#stale-card').classList.toggle('hidden', !p.expired_with_money.length);
-  $('#stale-rows').innerHTML = p.expired_with_money.map((b) => balRow(b, false)).join('');
   $$('[data-pane=payments] tr[data-id]').forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a')) openBooking(tr.dataset.id); }));
 }
 $('#pay-csv').addEventListener('click', () => {
@@ -195,7 +185,7 @@ function drawCalDay() {
   const sec = (title, items, empty) => `<h3>${title}</h3>${items.length ? `<ul class="day-list">${items.join('')}</ul>` : `<p class="muted small-txt" style="margin:0">${empty}</p>`}`;
   $('#cal-day').innerHTML = `<div class="modal-head" style="flex-wrap:wrap"><h2 style="margin:0">${esc(cap(dLong(calSel)))}</h2></div>
     ${sec('✈ Salidas de clientes', x.departures.map((s) => `<li><span class="t">${esc(s.time)}</span> ${esc(s.flight)} <b>${esc(s.route)}</b> · ${link(s.booking_id, s.code)} ${esc(s.contact_name)} · ${s.pax} pax <span class="badge b-${esc(s.status)}">${esc(s.status_label)}</span></li>`), 'Ningún cliente vuela este día.')}
-    ${sec('⏰ Reservas que vencen', x.expiring.map((e) => `<li><span class="t">${new Date(e.at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</span> ${link(e.booking_id, e.code)} ${esc(e.contact_name)} · saldo <b>${usd(e.balance)}</b></li>`), 'Ninguna reserva vence este día.')}
+    ${sec('⏰ Reservas que vencen', x.expiring.map((e) => `<li><span class="t">${new Date(e.at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</span> ${link(e.booking_id, e.code)} ${esc(e.contact_name)} · por pagar <b>${usd(e.balance)}</b></li>`), 'Ninguna reserva vence este día.')}
     ${sec('$ Cobrado', x.payments.n ? [`<li><b>${usd(x.payments.total)}</b> en ${x.payments.n} pago${x.payments.n > 1 ? 's' : ''}</li>`] : [], 'Sin cobros.')}`;
   $$('#cal-day [data-open]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openBooking(a.dataset.open); });
 }
@@ -334,12 +324,12 @@ async function loadSettings() {
   const s = (await getCat()).settings;
   $('#s-tax').value = Math.round(s.tax_rate * 1000) / 10; $('#s-fee').value = s.service_fee; $('#s-hold').value = s.hold_hours;
   $('#s-std').value = s.seat_std; $('#s-front').value = s.seat_front; $('#s-exit').value = s.seat_exit;
-  $('#s-dep').value = Math.round(s.deposit_pct * 100); $('#s-fpd').value = s.full_pay_days; $('#s-wa').value = s.whatsapp ? '+' + s.whatsapp : '';
+  $('#s-wa').value = s.whatsapp ? '+' + s.whatsapp : '';
 }
 $('#set-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   try { await api('/api/admin/settings', { method: 'PUT', body: { tax_rate: Number($('#s-tax').value) / 100, service_fee: Number($('#s-fee').value), hold_hours: Number($('#s-hold').value), seat_std: Number($('#s-std').value), seat_front: Number($('#s-front').value), seat_exit: Number($('#s-exit').value),
-    deposit_pct: Number($('#s-dep').value) / 100, full_pay_days: Number($('#s-fpd').value), whatsapp: $('#s-wa').value } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
+    whatsapp: $('#s-wa').value } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
   catch (ex) { showMsg($('#set-msg'), ex.message); }
 });
 

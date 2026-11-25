@@ -118,18 +118,7 @@ async function getSettings() {
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee),
     seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20),
-    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15),
     whatsapp: String(s.whatsapp || '') };
-}
-
-// Pago en abonos: con un anticipo la reserva se mantiene apartada hasta `full_pay_days` días antes del primer vuelo.
-function depositInfo(b, segs, st) {
-  if (b.status !== 'pendiente_pago' || !segs.length) return null;
-  const first = segs.map((s) => s.flight_date).sort()[0];
-  const deadline = addDays(first, -st.full_pay_days);
-  const total = Number(b.total), paid = Number(b.paid_amount || 0), balance = money(total - paid);
-  const min = Math.min(balance, paid > 0 ? 1 : money(Math.max(1, total * st.deposit_pct)));
-  return { allowed: st.deposit_pct < 1 && deadline > todayStr() && min < balance, min, deadline, pct: st.deposit_pct, days: st.full_pay_days };
 }
 
 async function airportMap() {
@@ -215,7 +204,6 @@ async function loadBooking(where, params) {
     payment_method: b.payment_method, payment_ref: b.payment_ref, paid_at: b.paid_at,
     paid_amount: paid, balance: money(Math.max(0, Number(b.total) - paid)),
     payments: pay.map((p) => ({ id: p.id, amount: Number(p.amount), method: p.method, ref: p.ref, note: p.note, user_name: p.user_name, at: p.created_at })),
-    deposit: depositInfo(b, segs, settings),
     segments: segs.map((s) => ({
       id: s.id, route_id: s.route_id,
       seats: pax.map((p) => { const a = st.find((x) => x.segment_id === s.id && x.passenger_id === p.id); return a ? { seat: a.seat, type: a.seat_type, price: Number(a.price) } : null; }),
@@ -527,14 +515,7 @@ async function changeSeats(b, segIdx, wanted, { staff = false, userName = null }
     sel.forEach((x, i) => { if (x) x.price = Math.min(x.price, sg.seats[i]?.price ?? x.price); });
   }
   await saveSeats(b.id, sg.id, b.passengers.map((p) => p.id), sel);
-  if (!issued) {
-    await recalcSeatsTotal(b.id);
-    // Si ya había abonos y el nuevo total quedó cubierto, se emiten los boletos.
-    const { rows: nb } = await query('SELECT total, paid_amount FROM bookings WHERE id = $1', [b.id]);
-    if (b.paid_amount > 0 && Number(nb[0].paid_amount) >= Number(nb[0].total) - 0.005) {
-      await issueBooking(b.id, { method: 'Pago en abonos', userName, note: 'El total quedó cubierto con los abonos.' });
-    }
-  }
+  if (!issued) await recalcSeatsTotal(b.id);
   const txt = sel.map((x, i) => `P${i + 1}: ${x ? x.seat : 'sin asiento'}`).join(', ');
   await query('INSERT INTO booking_events (booking_id, status, note, user_name) VALUES ($1,$2,$3,$4)',
     [b.id, b.status, `Cambio de asientos ${sg.origin}-${sg.destination}: ${txt}`, userName]);
@@ -781,36 +762,19 @@ async function insertPayment(bookingId, { amount, method, ref = null, note = nul
   return true;
 }
 
-// Registra un pago completo o un abono. Si cubre el total, emite los boletos.
-async function recordPayment(bookingId, { amount, method, ref = null, userName = null, note = '', trusted = false }) {
+// Registra el pago del total pendiente y emite los boletos (solo se acepta el pago completo).
+async function recordPayment(bookingId, { amount, method, ref = null, userName = null, note = '' }) {
   const b = await loadBooking('id = $1', [bookingId]);
   if (!b) throw new HttpError(404, 'Reserva no encontrada.');
   if (b.status !== 'pendiente_pago') throw new HttpError(400, `No se puede registrar el pago: la reserva está "${b.status_label}".`);
   amount = money(amount);
-  if (!(amount > 0)) throw new HttpError(400, 'Escribe un monto válido.');
-  if (amount > b.balance + 0.005) throw new HttpError(400, `El monto es mayor que el saldo (${fmt(b.balance)} USD).`);
-  const full = amount >= b.balance - 0.005;
-  if (!full && !trusted) {
-    if (!b.deposit?.allowed) throw new HttpError(400, `Esta reserva se paga completa (${fmt(b.balance)} USD): el vuelo sale en menos de ${b.deposit?.days ?? ''} días o ya no admite abonos.`);
-    if (amount < b.deposit.min - 0.005) throw new HttpError(400, `El ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo es ${fmt(b.deposit.min)} USD.`);
-  }
+  if (Math.abs(amount - b.balance) > 0.005) throw new HttpError(400, `El pago debe ser por el total (${fmt(b.balance)} USD).`);
   if (!(await insertPayment(b.id, { amount, method, ref, note, userName }))) return b.status;
-  if (full) {
-    const before = b.paid_amount > 0;
-    return issueBooking(b.id, { method: before ? 'Pago en abonos' : method, ref, userName,
-      note: before ? `Saldo liquidado: ${fmt(amount)} USD con ${method}.${note ? ' ' + note : ''}` : note });
-  }
-  const paid = money(b.paid_amount + amount);
-  if (b.deposit) {
-    const until = new Date(b.deposit.deadline + 'T23:59:00Z');
-    if (until > new Date(b.expires_at)) await query('UPDATE bookings SET expires_at = $1 WHERE id = $2', [until, b.id]);
-  }
-  await log(b, `${b.paid_amount > 0 ? 'Abono' : 'Anticipo'} recibido: ${fmt(amount)} USD (${method}). Pagado ${fmt(paid)} de ${fmt(b.total)}; saldo ${fmt(b.total - paid)} USD${b.deposit ? ' a liquidar antes del ' + b.deposit.deadline : ''}.${note ? ' ' + note : ''}`, userName);
-  return 'pendiente_pago';
+  return issueBooking(b.id, { method, ref, userName, note });
 }
 
-// Pago en línea confirmado por Stripe (puede ser el total o un abono). Si la reserva ya no está vigente
-// (cancelada, o vencida y sin asientos) o el monto no cuadra, se guarda el pago y se marca para revisión.
+// Pago en línea confirmado por Stripe. Si la reserva ya no está vigente (cancelada, o vencida y sin
+// asientos) o el monto no es el total, se guarda el pago y se marca para revisión.
 async function settleOnlinePayment(session) {
   const code = session?.metadata?.booking_code || session?.client_reference_id;
   if (!code || session.payment_status !== 'paid') return null;
@@ -823,7 +787,7 @@ async function settleOnlinePayment(session) {
   const balance = money(Number(b.total) - Number(b.paid_amount || 0));
   let problem = null;
   if (b.status === 'emitido' || b.status === 'pago_revision') problem = 'Se recibió un pago en línea, pero la reserva ya estaba pagada.';
-  else if (amount > balance + 0.005) problem = `Monto pagado (${fmt(amount)}) mayor que el saldo (${fmt(balance)}).`;
+  else if (Math.abs(amount - balance) > 0.005) problem = `Monto pagado (${fmt(amount)}) distinto al total (${fmt(balance)}).`;
   else if (b.status === 'cancelado') problem = 'La reserva estaba cancelada al recibir el pago.';
   else if (b.status === 'vencido') {
     const { rows: segs } = await query('SELECT route_id, flight_date FROM segments WHERE booking_id = $1', [b.id]);
@@ -841,7 +805,7 @@ async function settleOnlinePayment(session) {
     await query('INSERT INTO booking_events (booking_id, status, note) VALUES ($1,$2,$3)', [b.id, status, problem + ' Revisar y reembolsar desde Stripe si aplica.']);
     return status;
   }
-  return recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref, trusted: true });
+  return recordPayment(b.id, { amount, method: ONLINE_METHOD, ref, note: 'Ref. ' + ref });
 }
 
 // ---------- pago en línea ----------
@@ -857,19 +821,15 @@ app.post('/api/bookings/:code/checkout', wrap(async (req, res) => {
     throw new HttpError(404, 'No encontramos la reserva.');
   }
   if (b.status !== 'pendiente_pago') throw new HttpError(400, `Esta reserva está "${b.status_label}" y no se puede pagar.`);
-  // Monto: el saldo completo o un abono (si la reserva lo permite).
-  const amount = req.body.amount === undefined || req.body.amount === null || req.body.amount === '' ? b.balance : money(req.body.amount);
-  if (!(amount > 0) || amount > b.balance + 0.005) throw new HttpError(400, `El monto debe estar entre 1 y ${fmt(b.balance)} USD.`);
-  if (amount < b.balance - 0.005) {
-    if (!b.deposit?.allowed) throw new HttpError(400, 'Esta reserva se paga completa.');
-    if (amount < b.deposit.min - 0.005) throw new HttpError(400, `El ${b.paid_amount > 0 ? 'abono' : 'anticipo'} mínimo es ${fmt(b.deposit.min)} USD.`);
-  }
+  // Siempre se cobra el total pendiente (no hay pagos parciales).
+  const amount = b.balance;
+  if (!(amount > 0)) throw new HttpError(400, 'Esta reserva no tiene monto por pagar.');
   // Stripe exige que la sesión expire entre 30 min y 24 h.
   const exp = new Date(Math.max(Date.now() + 31 * 60 * 1000, Math.min(new Date(b.expires_at).getTime(), Date.now() + 23.5 * 3600 * 1000)));
   const desc = b.segments.map((sg) => `${sg.flight_no} ${sg.origin}-${sg.destination} ${sg.date}`).join(' / ') + ` · ${b.pax_count} pasajero(s)`;
   const base = baseUrl(req);
   const session = await payments.createCheckout({
-    booking: b, amount, description: (amount < b.balance - 0.005 ? 'Abono · ' : '') + desc, expiresAt: exp,
+    booking: b, amount, description: desc, expiresAt: exp,
     successUrl: `${base}/reserva?code=${b.code}&session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}/reserva?code=${b.code}&pago=cancelado`,
   });
@@ -908,7 +868,7 @@ app.post('/api/staff/bookings/:id/cancel', requireStaff, wrap(async (req, res) =
   const b = await loadBooking('id = $1', [Number(req.params.id) || 0]);
   if (!b) throw new HttpError(404, 'Reserva no encontrada.');
   const admin = req.session.user.role === 'admin';
-  // Con dinero recibido (boleto emitido, en revisión, o abonos) solo cancela un administrador.
+  // Con dinero recibido (boleto emitido o en revisión) solo cancela un administrador.
   const withMoney = b.paid_amount > 0 || ['emitido', 'pago_revision'].includes(b.status);
   if (withMoney && !admin && ['pendiente_pago', 'emitido', 'pago_revision', 'vencido'].includes(b.status)) {
     throw new HttpError(400, b.status === 'emitido' ? 'Solo un administrador puede cancelar un boleto emitido.' : 'Esta reserva ya tiene pagos: solo un administrador puede cancelarla.');
@@ -998,17 +958,9 @@ app.get('/api/staff/payments', requireStaff, wrap(async (req, res) => {
      FROM payments WHERE created_at >= $3`,
     [new Date(today + 'T00:00:00Z'), new Date(monday + 'T00:00:00Z'), new Date([today.slice(0, 7) + '-01', monday].sort()[0] + 'T00:00:00Z')]);
   const { rows: monthRows } = await query('SELECT COALESCE(SUM(amount), 0) AS t FROM payments WHERE created_at >= $1', [new Date(today.slice(0, 7) + '-01T00:00:00Z')]);
-  const { rows: bal } = await query(
-    `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-     WHERE status = 'pendiente_pago' AND paid_amount > 0 ORDER BY expires_at LIMIT 500`);
-  const { rows: stale } = await query(
-    `SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-     WHERE status = 'vencido' AND paid_amount > 0 ORDER BY expires_at DESC LIMIT 500`);
-  const mapBal = (b) => ({ id: b.id, code: b.code, contact_name: b.contact_name, contact_phone: b.contact_phone, total: Number(b.total),
-    paid: Number(b.paid_amount), balance: money(Number(b.total) - Number(b.paid_amount)), expires_at: b.expires_at });
   res.json({ from, to, method, rows: list, total: money(list.reduce((t, p) => t + p.amount, 0)), by_method: Object.values(byMethod),
     summary: { day: Number(sum[0].day), week: Number(sum[0].week), month: Number(monthRows[0].t) },
-    balances: bal.map(mapBal), expired_with_money: stale.map(mapBal), methods: [...new Set([ONLINE_METHOD, ...(await query('SELECT DISTINCT method FROM payments ORDER BY method')).rows.map((r) => r.method)])] });
+    methods: [...new Set([ONLINE_METHOD, ...(await query('SELECT DISTINCT method FROM payments ORDER BY method')).rows.map((r) => r.method)])] });
 }));
 
 // ---------- calendario de la agencia ----------
@@ -1050,13 +1002,6 @@ app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   if (!(fee >= 0 && fee <= 500)) throw new HttpError(400, 'Cargo por servicio inválido.');
   const seatVals = ['seat_std', 'seat_front', 'seat_exit'].map((k) => [k, req.body[k] === undefined ? null : Number(req.body[k])]);
   for (const [k, v] of seatVals) { if (v !== null && !(v >= 0 && v <= 500)) throw new HttpError(400, 'Precio de asiento inválido.'); if (v !== null) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]); }
-  const extra = [['deposit_pct', 0.05, 1, 'Anticipo entre 5 y 100 %.'], ['full_pay_days', 1, 90, 'Días para liquidar entre 1 y 90.']];
-  for (const [k, lo, hi, msg] of extra) {
-    if (req.body[k] === undefined) continue;
-    const v = Number(req.body[k]);
-    if (!(v >= lo && v <= hi)) throw new HttpError(400, msg);
-    await query('UPDATE settings SET value = $1 WHERE key = $2', [String(k === 'deposit_pct' ? v : Math.round(v)), k]);
-  }
   if (req.body.whatsapp !== undefined) {
     // Número de WhatsApp de la empresa: solo dígitos, con código de país (8 a 15). Vacío = sin WhatsApp.
     const wa = String(req.body.whatsapp || '').replace(/\D/g, '');
