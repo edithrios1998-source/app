@@ -543,3 +543,8 @@ footer a, footer .legal a { color: #fff; }
 .al-card { align-items: flex-start; }
 .al-tag { font-style: normal; font-size: .72rem; font-weight: 700; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 2px 9px; margin-top: 8px; align-self: flex-start; }
 .al-tag.on { color: var(--ok); background: var(--ok-soft); }
+
+/* logotipo v3 */
+.logo { gap: 11px; font-size: 1.22rem; letter-spacing: -.6px; }
+.logo img { border-radius: 12px; box-shadow: 0 6px 18px rgba(43,69,214,.32); }
+.logo b { background: linear-gradient(90deg, #ff8a3d, #ff5e62); -webkit-background-clip: text; background-clip: text; color: transparent; }
