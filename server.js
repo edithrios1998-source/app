@@ -118,7 +118,7 @@ async function getSettings() {
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return { tax_rate: Number(s.tax_rate), hold_hours: Number(s.hold_hours), service_fee: Number(s.service_fee),
     seat_std: Number(s.seat_std ?? 8), seat_front: Number(s.seat_front ?? 15), seat_exit: Number(s.seat_exit ?? 20),
-    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15), appt_capacity: Number(s.appt_capacity ?? 2) };
+    deposit_pct: Number(s.deposit_pct ?? 0.3), full_pay_days: Number(s.full_pay_days ?? 15) };
 }
 
 // Pago en abonos: con un anticipo la reserva se mantiene apartada hasta `full_pay_days` días antes del primer vuelo.
@@ -1037,188 +1037,22 @@ app.get('/api/staff/calendar', requireStaff, wrap(async (req, res) => {
   await expireOld();
   const { first, last } = monthRange(str(req.query.month, 7));
   const t0 = new Date(first + 'T00:00:00Z'), t1 = new Date(addDays(last, 1) + 'T00:00:00Z');
-  const [{ rows: dep }, { rows: exp }, { rows: pay }, { rows: ap }, { rows: tk }] = await Promise.all([
+  const [{ rows: dep }, { rows: exp }, { rows: pay }] = await Promise.all([
     query(`SELECT s.flight_date, s.dep_time, s.origin, s.destination, s.airline, s.flight_no, b.id, b.code, b.pax_count, b.status, b.contact_name
       FROM segments s JOIN bookings b ON b.id = s.booking_id
       WHERE s.flight_date >= $1 AND s.flight_date <= $2 AND b.status IN ('emitido', 'pendiente_pago', 'pago_revision') ORDER BY s.flight_date, s.dep_time LIMIT 3000`, [first, last]),
     query(`SELECT id, code, contact_name, total, paid_amount, expires_at FROM bookings
       WHERE status = 'pendiente_pago' AND expires_at >= $1 AND expires_at < $2 ORDER BY expires_at`, [t0, t1]),
     query('SELECT amount, created_at FROM payments WHERE created_at >= $1 AND created_at < $2', [t0, t1]),
-    query(`SELECT id, appt_date, appt_time, name, reason, status FROM appointments
-      WHERE appt_date >= $1 AND appt_date <= $2 AND status <> 'cancelada' ORDER BY appt_date, appt_time`, [first, last]),
-    query('SELECT id, title, due_date, due_time, done FROM tasks WHERE due_date >= $1 AND due_date <= $2 ORDER BY due_date, due_time', [first, last]),
   ]);
   const days = {};
-  const day = (d) => (days[d] = days[d] || { departures: [], expiring: [], payments: { n: 0, total: 0 }, appointments: [], tasks: [] });
+  const day = (d) => (days[d] = days[d] || { departures: [], expiring: [], payments: { n: 0, total: 0 } });
   for (const s of dep) day(s.flight_date).departures.push({ booking_id: s.id, code: s.code, contact_name: s.contact_name, pax: s.pax_count, status: s.status, status_label: STATUS[s.status],
     route: s.origin + '–' + s.destination, flight: s.airline + ' ' + s.flight_no, time: s.dep_time });
   for (const b of exp) day(new Date(b.expires_at).toISOString().slice(0, 10)).expiring.push({ booking_id: b.id, code: b.code, contact_name: b.contact_name,
     balance: money(Number(b.total) - Number(b.paid_amount || 0)), at: b.expires_at });
   for (const p of pay) { const x = day(new Date(p.created_at).toISOString().slice(0, 10)).payments; x.n++; x.total = money(x.total + Number(p.amount)); }
-  for (const a of ap) day(a.appt_date).appointments.push({ id: a.id, time: a.appt_time, name: a.name, reason: APPT_REASONS[a.reason] || a.reason, status: a.status });
-  for (const t of tk) day(t.due_date).tasks.push({ id: t.id, title: t.title, time: t.due_time, done: t.done });
   res.json({ month: first.slice(0, 7), days });
-}));
-
-// ---------- agenda: citas y tareas ----------
-const APPT_REASONS = { pago: 'Pagar o abonar una reserva', compra: 'Comprar boletos / asesoría', cambio: 'Cambios o cancelación', documentos: 'Dudas de documentos y viaje', otro: 'Otro' };
-const APPT_STATUS = { pendiente: 'Por confirmar', confirmada: 'Confirmada', atendida: 'Atendida', no_asistio: 'No asistió', cancelada: 'Cancelada' };
-// Horario de atención: lunes a viernes 9:00–18:00, sábado 9:00–14:00, citas cada 30 minutos.
-const OPEN_HOURS = { 1: [9, 18], 2: [9, 18], 3: [9, 18], 4: [9, 18], 5: [9, 18], 6: [9, 14] };
-const slotTimes = (date) => {
-  const h = OPEN_HOURS[weekday(date)];
-  if (!h) return [];
-  const out = [];
-  for (let m = h[0] * 60; m < h[1] * 60; m += 30) out.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
-  return out;
-};
-async function slotsFor(date, excludeId = 0) {
-  const st = await getSettings();
-  const { rows } = await query(`SELECT appt_time, COUNT(*)::int AS n FROM appointments
-    WHERE appt_date = $1 AND status IN ('pendiente', 'confirmada') AND id <> $2 GROUP BY appt_time`, [date, excludeId]);
-  const used = Object.fromEntries(rows.map((r) => [r.appt_time, Number(r.n)]));
-  return slotTimes(date).map((t) => ({ time: t, left: Math.max(0, st.appt_capacity - (used[t] || 0)) }));
-}
-function readAppt(body, { staff = false } = {}) {
-  const a = {
-    name: str(body.name, 100), phone: str(body.phone, 30), email: str(body.email, 120).toLowerCase(),
-    booking_code: str(body.booking_code, 10).toUpperCase(), reason: str(body.reason, 20), notes: str(body.notes, 400),
-    date: str(body.date, 10), time: str(body.time, 5),
-  };
-  if (a.name.length < 3) throw new HttpError(400, 'Escribe el nombre.');
-  if (a.phone.replace(/\D/g, '').length < 7) throw new HttpError(400, 'Teléfono inválido.');
-  if (a.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.email)) throw new HttpError(400, 'Correo inválido.');
-  if (a.booking_code && !/^[A-Z0-9]{6}$/.test(a.booking_code)) throw new HttpError(400, 'El código de reserva tiene 6 caracteres.');
-  if (!APPT_REASONS[a.reason]) throw new HttpError(400, 'Elige el motivo de la cita.');
-  if (!isDate(a.date) || a.date < todayStr()) throw new HttpError(400, 'Elige una fecha válida.');
-  if (!staff && daysBetween(todayStr(), a.date) > 60) throw new HttpError(400, 'Puedes agendar hasta 60 días antes.');
-  if (!slotTimes(a.date).includes(a.time)) throw new HttpError(400, 'Ese horario no está disponible (la agencia abre de lunes a sábado).');
-  return a;
-}
-async function newApptCode() {
-  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let c = 'C'; for (let j = 0; j < 5; j++) c += A[crypto.randomInt(A.length)];
-  return c;
-}
-const apptView = (a) => ({ id: a.id, code: a.code, name: a.name, phone: a.phone, email: a.email, booking_code: a.booking_code,
-  reason: a.reason, reason_label: APPT_REASONS[a.reason] || a.reason, notes: a.notes, date: a.appt_date, time: a.appt_time,
-  status: a.status, status_label: APPT_STATUS[a.status], origin: a.origin, user_name: a.user_name, created_at: a.created_at });
-
-app.get('/api/appointments/info', (req, res) => res.json({ reasons: APPT_REASONS, hours: 'Lunes a viernes de 9:00 a 18:00 y sábados de 9:00 a 14:00', today: todayStr(), max_days: 60 }));
-app.get('/api/appointments/slots', wrap(async (req, res) => {
-  const date = str(req.query.date, 10);
-  if (!isDate(date)) throw new HttpError(400, 'Fecha inválida.');
-  if (date < todayStr()) return res.json({ date, open: false, slots: [] });
-  const slots = await slotsFor(date);
-  res.json({ date, open: slots.length > 0, slots });
-}));
-const apptAttempts = new Map();
-app.post('/api/appointments', wrap(async (req, res) => {
-  const now = Date.now();
-  const at = apptAttempts.get(req.ip) || { n: 0, t: now };
-  if (now - at.t > 3600 * 1000) { at.n = 0; at.t = now; }
-  if (at.n >= 5) throw new HttpError(429, 'Ya agendaste varias citas. Si necesitas otra, llama a la agencia.');
-  if (req.body.accept_privacy !== true) throw new HttpError(400, 'Acepta el aviso de privacidad para agendar.');
-  const a = readAppt(req.body);
-  const slot = (await slotsFor(a.date)).find((s) => s.time === a.time);
-  if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario se acaba de llenar. Elige otro.');
-  const code = await newApptCode();
-  const { rows } = await query(`INSERT INTO appointments (code, name, phone, email, booking_code, reason, notes, appt_date, appt_time, status, origin)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pendiente','web') RETURNING *`,
-    [code, a.name, a.phone, a.email || null, a.booking_code || null, a.reason, a.notes || null, a.date, a.time]);
-  at.n++; apptAttempts.set(req.ip, at);
-  const v = apptView(rows[0]);
-  res.status(201).json({ code: v.code, date: v.date, time: v.time, reason_label: v.reason_label, name: v.name, status_label: v.status_label });
-}));
-
-app.get('/api/staff/agenda', requireStaff, wrap(async (req, res) => {
-  await expireOld();
-  const date = isDate(req.query.date) ? req.query.date : todayStr();
-  const soon = new Date(Date.now() + 24 * 3600 * 1000), in3 = new Date(Date.now() + 3 * 24 * 3600 * 1000);
-  const [{ rows: ap }, { rows: tk }, { rows: users }, { rows: exp }, { rows: bal }, { rows: stale }, { rows: rev }, { rows: unconf }, { rows: corr }, slots] = await Promise.all([
-    query('SELECT * FROM appointments WHERE appt_date = $1 ORDER BY appt_time, id', [date]),
-    query(`SELECT * FROM tasks WHERE due_date = $1 OR (done = FALSE AND due_date < $1) ORDER BY done, due_date, due_time, id LIMIT 300`, [date]),
-    query('SELECT id, name FROM users WHERE active = TRUE ORDER BY name'),
-    query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-      WHERE status = 'pendiente_pago' AND expires_at < $1 AND (paid_amount IS NULL OR paid_amount = 0) ORDER BY expires_at LIMIT 100`, [soon]),
-    query(`SELECT id, code, contact_name, contact_phone, total, paid_amount, expires_at FROM bookings
-      WHERE status = 'pendiente_pago' AND paid_amount > 0 AND expires_at < $1 ORDER BY expires_at LIMIT 100`, [in3]),
-    query("SELECT id, code, contact_name, contact_phone, total, paid_amount FROM bookings WHERE status = 'vencido' AND paid_amount > 0 LIMIT 100"),
-    query("SELECT id, code, contact_name, contact_phone FROM bookings WHERE status = 'pago_revision' LIMIT 100"),
-    query("SELECT * FROM appointments WHERE status = 'pendiente' AND appt_date >= $1 ORDER BY appt_date, appt_time LIMIT 100", [todayStr()]),
-    query("SELECT COUNT(*)::int AS n FROM correction_requests WHERE status = 'pendiente'"),
-    slotsFor(date),
-  ]);
-  const uname = Object.fromEntries(users.map((u) => [u.id, u.name]));
-  const bal$ = (b) => money(Number(b.total) - Number(b.paid_amount || 0));
-  const reminders = [
-    ...exp.map((b) => ({ kind: 'vence', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): la reserva vence pronto sin pago. Total ${fmt(b.total)} USD.`, at: b.expires_at })),
-    ...bal.map((b) => ({ kind: 'saldo', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): debe liquidar ${fmt(bal$(b))} USD de saldo.`, at: b.expires_at })),
-    ...stale.map((b) => ({ kind: 'anticipo', booking_id: b.id, code: b.code, text: `${b.contact_name} (${b.contact_phone}): la reserva venció con ${fmt(b.paid_amount)} USD pagados. Contactar y resolver (reembolso o nueva reserva).` })),
-    ...rev.map((b) => ({ kind: 'revision', booking_id: b.id, code: b.code, text: `${b.contact_name}: pago en línea que requiere revisión.` })),
-    ...unconf.map((a) => ({ kind: 'cita', appointment_id: a.id, date: a.appt_date, text: `Confirmar cita de ${a.name} (${a.phone}) el ${a.appt_date} a las ${a.appt_time}.` })),
-    ...(corr[0].n ? [{ kind: 'correccion', text: `${corr[0].n} solicitud${corr[0].n > 1 ? 'es' : ''} de corrección de datos por revisar.` }] : []),
-  ];
-  res.json({ date, open: slots.length > 0, slots, appointments: ap.map(apptView),
-    tasks: tk.map((t) => ({ id: t.id, title: t.title, due_date: t.due_date, due_time: t.due_time, booking_code: t.booking_code,
-      assigned_to: t.assigned_to, assigned_name: uname[t.assigned_to] || null, done: t.done, created_by: t.created_by, done_by: t.done_by, overdue: !t.done && t.due_date < date })),
-    reminders, users, reasons: APPT_REASONS, statuses: APPT_STATUS });
-}));
-
-app.post('/api/staff/appointments', requireStaff, wrap(async (req, res) => {
-  const a = readAppt(req.body, { staff: true });
-  const slot = (await slotsFor(a.date)).find((s) => s.time === a.time);
-  if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario ya está lleno.');
-  const { rows } = await query(`INSERT INTO appointments (code, name, phone, email, booking_code, reason, notes, appt_date, appt_time, status, origin, user_name)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'confirmada','agencia',$10) RETURNING *`,
-    [await newApptCode(), a.name, a.phone, a.email || null, a.booking_code || null, a.reason, a.notes || null, a.date, a.time, req.session.user.name]);
-  res.status(201).json(apptView(rows[0]));
-}));
-app.put('/api/staff/appointments/:id', requireStaff, wrap(async (req, res) => {
-  const id = Number(req.params.id) || 0;
-  const { rows } = await query('SELECT * FROM appointments WHERE id = $1', [id]);
-  const a = rows[0]; if (!a) throw new HttpError(404, 'Cita no encontrada.');
-  const status = str(req.body.status, 20);
-  if (!APPT_STATUS[status]) throw new HttpError(400, 'Estado inválido.');
-  let date = a.appt_date, time = a.appt_time;
-  if (req.body.date || req.body.time) { // reprogramar
-    date = str(req.body.date, 10) || date; time = str(req.body.time, 5) || time;
-    if (!isDate(date) || date < todayStr() || !slotTimes(date).includes(time)) throw new HttpError(400, 'Fecha u hora inválida.');
-    const slot = (await slotsFor(date, id)).find((s) => s.time === time);
-    if (!slot || slot.left < 1) throw new HttpError(409, 'Ese horario ya está lleno.');
-  }
-  await query('UPDATE appointments SET status = $1, appt_date = $2, appt_time = $3, user_name = $4 WHERE id = $5', [status, date, time, req.session.user.name, id]);
-  res.json({ ok: true });
-}));
-
-app.post('/api/staff/tasks', requireStaff, wrap(async (req, res) => {
-  const title = str(req.body.title, 200), due = str(req.body.due_date, 10), time = str(req.body.due_time, 5);
-  const code = str(req.body.booking_code, 10).toUpperCase();
-  const assigned = Number(req.body.assigned_to) || null;
-  if (title.length < 3) throw new HttpError(400, 'Describe la tarea.');
-  if (!isDate(due)) throw new HttpError(400, 'Elige la fecha.');
-  if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new HttpError(400, 'Hora inválida.');
-  if (code && !/^[A-Z0-9]{6}$/.test(code)) throw new HttpError(400, 'El código de reserva tiene 6 caracteres.');
-  if (assigned && !(await query('SELECT 1 FROM users WHERE id = $1 AND active = TRUE', [assigned])).rows.length) throw new HttpError(400, 'Usuario inválido.');
-  await query('INSERT INTO tasks (title, due_date, due_time, booking_code, assigned_to, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-    [title, due, time || null, code || null, assigned, req.session.user.name]);
-  res.status(201).json({ ok: true });
-}));
-app.put('/api/staff/tasks/:id', requireStaff, wrap(async (req, res) => {
-  const id = Number(req.params.id) || 0;
-  if (!(await query('SELECT 1 FROM tasks WHERE id = $1', [id])).rows.length) throw new HttpError(404, 'Tarea no encontrada.');
-  const done = !!req.body.done;
-  await query('UPDATE tasks SET done = $1, done_by = $2, done_at = $3 WHERE id = $4', [done, done ? req.session.user.name : null, done ? new Date() : null, id]);
-  res.json({ ok: true });
-}));
-app.delete('/api/staff/tasks/:id', requireStaff, wrap(async (req, res) => {
-  await query('DELETE FROM tasks WHERE id = $1', [Number(req.params.id) || 0]);
-  res.json({ ok: true });
-}));
-app.get('/api/staff/booking-by-code/:code', requireStaff, wrap(async (req, res) => {
-  const { rows } = await query('SELECT id FROM bookings WHERE code = $1', [str(req.params.code, 10).toUpperCase()]);
-  if (!rows[0]) throw new HttpError(404, 'No existe esa reserva.');
-  res.json({ id: rows[0].id });
 }));
 
 // ---------- administrador ----------
@@ -1237,7 +1071,7 @@ app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   if (!(fee >= 0 && fee <= 500)) throw new HttpError(400, 'Cargo por servicio inválido.');
   const seatVals = ['seat_std', 'seat_front', 'seat_exit'].map((k) => [k, req.body[k] === undefined ? null : Number(req.body[k])]);
   for (const [k, v] of seatVals) { if (v !== null && !(v >= 0 && v <= 500)) throw new HttpError(400, 'Precio de asiento inválido.'); if (v !== null) await query('UPDATE settings SET value = $1 WHERE key = $2', [String(v), k]); }
-  const extra = [['deposit_pct', 0.05, 1, 'Anticipo entre 5 y 100 %.'], ['full_pay_days', 1, 90, 'Días para liquidar entre 1 y 90.'], ['appt_capacity', 1, 20, 'Citas por horario entre 1 y 20.']];
+  const extra = [['deposit_pct', 0.05, 1, 'Anticipo entre 5 y 100 %.'], ['full_pay_days', 1, 90, 'Días para liquidar entre 1 y 90.']];
   for (const [k, lo, hi, msg] of extra) {
     if (req.body[k] === undefined) continue;
     const v = Number(req.body[k]);
@@ -1355,7 +1189,7 @@ app.put('/api/admin/users/:id', requireAdmin, wrap(async (req, res) => {
 // Respaldo: descarga todas las tablas en JSON (sin contraseñas). Solo administradores.
 app.get('/api/admin/backup', requireAdmin, wrap(async (req, res) => {
   const tables = ['settings', 'airports', 'airlines', 'routes', 'bookings', 'segments', 'passengers', 'seat_assignments',
-    'payments', 'correction_requests', 'booking_events', 'appointments', 'tasks'];
+    'payments', 'correction_requests', 'booking_events'];
   const data = { created_at: new Date().toISOString(), app: 'VuelaLatino', tables: {} };
   for (const t of tables) data.tables[t] = (await query(`SELECT * FROM ${t} ORDER BY 1`)).rows;
   data.tables.users = (await query('SELECT id, username, name, role, active, created_at FROM users ORDER BY id')).rows;
@@ -1363,6 +1197,9 @@ app.get('/api/admin/backup', requireAdmin, wrap(async (req, res) => {
   res.set('Content-Disposition', `attachment; filename="vuelalatino-respaldo-${todayStr()}.json"`);
   res.json(data);
 }));
+
+// La página de citas ya no existe (la app es solo en línea).
+app.get(['/cita', '/cita.html'], (req, res) => res.redirect(301, '/'));
 
 app.get('/healthz', (req, res) => res.send('ok'));
 app.use('/api', (req, res) => res.status(404).json({ error: 'No encontrado.' }));

@@ -172,15 +172,6 @@ async function init() {
       [b.id, b.total, b.payment_method || 'Sin especificar', b.payment_ref || null, 'Pago registrado antes de la sección de pagos', b.paid_at]);
     await query('UPDATE bookings SET paid_amount = total WHERE id = $1', [b.id]);
   }
-  // Agenda: citas con clientes y tareas del personal.
-  await query(`CREATE TABLE IF NOT EXISTS appointments (
-    id SERIAL PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, phone TEXT NOT NULL, email TEXT, booking_code TEXT,
-    reason TEXT NOT NULL, notes TEXT, appt_date TEXT NOT NULL, appt_time TEXT NOT NULL, status TEXT NOT NULL,
-    origin TEXT NOT NULL, user_name TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-  await query(`CREATE TABLE IF NOT EXISTS tasks (
-    id SERIAL PRIMARY KEY, title TEXT NOT NULL, due_date TEXT NOT NULL, due_time TEXT, booking_code TEXT,
-    assigned_to INTEGER, done BOOLEAN NOT NULL DEFAULT FALSE, created_by TEXT, done_by TEXT, done_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
 
   const count = async (t) => Number((await query(`SELECT COUNT(*)::int AS n FROM ${t}`)).rows[0].n);
   if (!(await count('airports'))) {
@@ -204,7 +195,7 @@ async function init() {
     }
   }
   const defaults = { tax_rate: '0.16', hold_hours: '24', service_fee: '10', seat_std: '8', seat_front: '15', seat_exit: '20',
-    deposit_pct: '0.3', full_pay_days: '15', appt_capacity: '2' };
+    deposit_pct: '0.3', full_pay_days: '15' };
   for (const [k, v] of Object.entries(defaults)) {
     const { rows } = await query('SELECT 1 FROM settings WHERE key = $1', [k]);
     if (!rows.length) await query('INSERT INTO settings (key, value) VALUES ($1,$2)', [k, v]);

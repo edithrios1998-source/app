@@ -29,7 +29,7 @@ const P = {
 const icon = (n, cls = 'ico') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
 
 function renderHeader(active) {
-  const links = [['/', 'Vuelos'], ['/reserva', 'Mi reserva'], ['/cita', 'Agendar cita'], ['/personal', 'Agencia']];
+  const links = [['/', 'Vuelos'], ['/reserva', 'Mi reserva'], ['/personal', 'Agencia']];
   const h = document.createElement('header');
   h.className = 'top';
   h.innerHTML = `<div class="wrap">

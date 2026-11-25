@@ -33,7 +33,6 @@
       <button class="active" data-tab="bookings">Reservas</button>
       <button data-tab="payments">Pagos</button>
       <button data-tab="calendar">Calendario</button>
-      <button data-tab="agenda">Agenda <span class="badge b-pendiente_pago hidden" id="ag-count"></span></button>
       <button data-tab="corrections">Correcciones <span class="badge b-pendiente_pago hidden" id="corr-count"></span></button>
       <button data-tab="routes" class="admin-only">Vuelos y horarios</button>
       <button data-tab="catalog" class="admin-only">Aerolíneas y aeropuertos</button>
@@ -85,47 +84,11 @@
           <div style="display:flex;gap:8px;align-items:center"><button class="secondary small" id="cal-prev" aria-label="Mes anterior">‹</button>
             <h2 id="cal-title" style="margin:0;min-width:180px;text-align:center;text-transform:capitalize"></h2>
             <button class="secondary small" id="cal-next" aria-label="Mes siguiente">›</button><button class="ghost small" id="cal-today">Hoy</button></div>
-          <div class="cal-legend"><i class="c-dep">✈ Salidas</i><i class="c-exp">⏰ Vencen</i><i class="c-pay">$ Cobrado</i><i class="c-apt">Citas</i><i class="c-task">Tareas</i></div>
+          <div class="cal-legend"><i class="c-dep">✈ Salidas</i><i class="c-exp">⏰ Vencen</i><i class="c-pay">$ Cobrado</i></div>
         </div>
         <div id="cal-grid" style="margin-top:12px"></div>
       </div>
       <div class="card" id="cal-day" style="margin-top:16px"></div>
-    </section>
-
-    <section data-pane="agenda" class="hidden">
-      <div class="card ag-nav">
-        <button class="secondary small" id="ag-prev" aria-label="Día anterior">‹</button>
-        <input type="date" id="ag-date" aria-label="Día">
-        <button class="secondary small" id="ag-next" aria-label="Día siguiente">›</button>
-        <button class="ghost small" id="ag-today">Hoy</button>
-        <b id="ag-title"></b>
-      </div>
-      <div class="ag-grid">
-        <div>
-          <div class="card">
-            <div class="modal-head"><h2>Citas del día</h2><button class="small" id="appt-new">+ Nueva cita</button></div>
-            <p class="muted small-txt" style="margin:0" id="ag-slots"></p>
-            <div id="appt-list" style="margin-top:10px"></div>
-          </div>
-          <div class="card" style="margin-top:16px">
-            <h2>Tareas</h2>
-            <div id="task-list"></div>
-            <form id="task-f" class="task-form">
-              <div class="tf-title"><label for="tt">Nueva tarea</label><input id="tt" maxlength="200" placeholder="Ej. Llamar a cliente para recordar su saldo"></div>
-              <div><label for="th">Hora</label><input id="th" type="time"></div>
-              <div><label for="tc">Reserva</label><input id="tc" maxlength="6" placeholder="Código" style="text-transform:uppercase"></div>
-              <div><label for="ta">Para</label><select id="ta"></select></div>
-              <div><button type="submit" class="block">Agregar</button></div>
-            </form>
-            <div class="alert hidden" id="task-msg"></div>
-          </div>
-        </div>
-        <div class="card">
-          <h2>Pendientes automáticos</h2>
-          <p class="muted small-txt" style="margin:0">Se generan solos a partir de reservas, pagos y citas.</p>
-          <div id="rem-list" style="margin-top:10px"></div>
-        </div>
-      </div>
     </section>
 
     <section data-pane="corrections" class="hidden">
@@ -193,11 +156,10 @@
             <div><label for="s-exit">Salida de emergencia</label><input id="s-exit" type="number" step="0.01" min="0"></div>
           </div>
           <p class="hint">Básica paga cualquier asiento que elija · Clásica: estándar sin costo · Flexible: todos sin costo.</p>
-          <h3>Pagos en abonos y citas</h3>
+          <h3>Pagos en abonos</h3>
           <div class="row3">
             <div><label for="s-dep">Anticipo mínimo (%)</label><input id="s-dep" type="number" step="1" min="5" max="100"></div>
             <div><label for="s-fpd">Liquidar antes del vuelo (días)</label><input id="s-fpd" type="number" min="1" max="90"></div>
-            <div><label for="s-cap">Citas por horario</label><input id="s-cap" type="number" min="1" max="20"></div>
           </div>
           <p class="hint">Con el anticipo la reserva queda apartada hasta esa fecha. Si el vuelo sale antes, se paga completa. Pon 100 % para no aceptar abonos.</p>
           <p class="hint">Tarifas: Básica = precio base · Clásica = ×1.30 · Flexible = ×1.75. Compras con menos de 21 días: +10 %; menos de 7 días: +25 %.</p>
@@ -207,7 +169,7 @@
       </div>
       <div class="card" style="max-width:640px;margin-top:16px">
         <h2>Respaldo de datos</h2>
-        <p class="muted small-txt" style="margin:0 0 12px">Descarga un archivo con todas las reservas, pagos, citas, vuelos y ajustes (sin contraseñas). Guárdalo en un lugar seguro: contiene datos personales de los clientes. La base de datos gratuita no tiene respaldos automáticos.</p>
+        <p class="muted small-txt" style="margin:0 0 12px">Descarga un archivo con todas las reservas, pagos, vuelos y ajustes (sin contraseñas). Guárdalo en un lugar seguro: contiene datos personales de los clientes. La base de datos gratuita no tiene respaldos automáticos.</p>
         <a class="btn secondary" href="/api/admin/backup" download>Descargar respaldo</a>
       </div>
     </section>

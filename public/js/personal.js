@@ -15,7 +15,6 @@ async function boot() {
   $('#fs').innerHTML = '<option value="">Todos los estados</option>' + Object.entries(cfg.statuses).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   loadBookings();
   refreshCorrCount().catch(() => {});
-  refreshAgCount().catch(() => {});
 }
 const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 const goTab = (name) => $(`.tabs button[data-tab="${name}"]`).click();
@@ -31,7 +30,7 @@ $$('.tabs button').forEach((b) => b.addEventListener('click', () => {
   const pane = $(`[data-pane="${b.dataset.tab}"]`);
   $$('.pane-err', pane).forEach((x) => x.remove());
   pane.setAttribute('aria-busy', 'true');
-  Promise.resolve(({ bookings: loadBookings, payments: loadPayments, calendar: loadCalendar, agenda: loadAgenda, corrections: loadCorrections, routes: loadRoutes, catalog: loadCatalog, settings: loadSettings, users: loadUsers })[b.dataset.tab]())
+  Promise.resolve(({ bookings: loadBookings, payments: loadPayments, calendar: loadCalendar, corrections: loadCorrections, routes: loadRoutes, catalog: loadCatalog, settings: loadSettings, users: loadUsers })[b.dataset.tab]())
     .catch((e) => {
       if (/Inicia sesión/.test(e.message)) return location.reload();
       pane.insertAdjacentHTML('afterbegin', `<div class="alert error pane-err">${icon('info', 'ico-sm')}<span>No se pudo cargar: ${esc(e.message)} <button type="button" class="linkbtn" data-retry>Reintentar</button></span></div>`);
@@ -182,8 +181,6 @@ async function loadCalendar() {
       x.departures.length ? `<i class="c-dep">✈ ${x.departures.length}</i>` : '',
       x.expiring.length ? `<i class="c-exp">⏰ ${x.expiring.length}</i>` : '',
       x.payments.n ? `<i class="c-pay">${usd0(x.payments.total)}</i>` : '',
-      x.appointments.length ? `<i class="c-apt">${x.appointments.length} cita${x.appointments.length > 1 ? 's' : ''}</i>` : '',
-      x.tasks.length ? `<i class="c-task">${x.tasks.filter((t) => t.done).length}/${x.tasks.length} tareas</i>` : '',
     ].join('') : '';
     return `<button type="button" class="aday ${d === cfg.today ? 'today' : ''} ${d === calSel ? 'on' : ''}" data-d="${d}"><span class="n">${n}</span><span class="chips-s">${chips}</span></button>`;
   });
@@ -191,130 +188,14 @@ async function loadCalendar() {
   drawCalDay();
 }
 function drawCalDay() {
-  const x = calData.days[calSel] || { departures: [], expiring: [], payments: { n: 0, total: 0 }, appointments: [], tasks: [] };
+  const x = calData.days[calSel] || { departures: [], expiring: [], payments: { n: 0, total: 0 } };
   const link = (id, code) => `<button type="button" class="linkbtn" data-open="${id}"><b style="letter-spacing:1px">${esc(code)}</b></button>`;
   const sec = (title, items, empty) => `<h3>${title}</h3>${items.length ? `<ul class="day-list">${items.join('')}</ul>` : `<p class="muted small-txt" style="margin:0">${empty}</p>`}`;
-  $('#cal-day').innerHTML = `<div class="modal-head" style="flex-wrap:wrap"><h2 style="margin:0">${esc(cap(dLong(calSel)))}</h2>
-      <button class="secondary small" id="cal-open-ag">Abrir agenda de este día</button></div>
+  $('#cal-day').innerHTML = `<div class="modal-head" style="flex-wrap:wrap"><h2 style="margin:0">${esc(cap(dLong(calSel)))}</h2></div>
     ${sec('✈ Salidas de clientes', x.departures.map((s) => `<li><span class="t">${esc(s.time)}</span> ${esc(s.flight)} <b>${esc(s.route)}</b> · ${link(s.booking_id, s.code)} ${esc(s.contact_name)} · ${s.pax} pax <span class="badge b-${esc(s.status)}">${esc(s.status_label)}</span></li>`), 'Ningún cliente vuela este día.')}
     ${sec('⏰ Reservas que vencen', x.expiring.map((e) => `<li><span class="t">${new Date(e.at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</span> ${link(e.booking_id, e.code)} ${esc(e.contact_name)} · saldo <b>${usd(e.balance)}</b></li>`), 'Ninguna reserva vence este día.')}
-    ${sec('$ Cobrado', x.payments.n ? [`<li><b>${usd(x.payments.total)}</b> en ${x.payments.n} pago${x.payments.n > 1 ? 's' : ''}</li>`] : [], 'Sin cobros.')}
-    ${sec('Citas', x.appointments.map((a) => `<li><span class="t">${esc(a.time)}</span> ${esc(a.name)} · ${esc(a.reason)} <span class="badge ${APPT_BADGE[a.status]}">${esc(APPT_LABEL[a.status])}</span></li>`), 'Sin citas.')}
-    ${sec('Tareas', x.tasks.map((t) => `<li>${t.done ? '✅' : '⬜'} ${t.time ? `<span class="t">${esc(t.time)}</span> ` : ''}${esc(t.title)}</li>`), 'Sin tareas.')}`;
+    ${sec('$ Cobrado', x.payments.n ? [`<li><b>${usd(x.payments.total)}</b> en ${x.payments.n} pago${x.payments.n > 1 ? 's' : ''}</li>`] : [], 'Sin cobros.')}`;
   $$('#cal-day [data-open]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openBooking(a.dataset.open); });
-  $('#cal-open-ag').onclick = () => { agDate = calSel; goTab('agenda'); };
-}
-
-// ----- agenda -----
-const APPT_LABEL = { pendiente: 'Por confirmar', confirmada: 'Confirmada', atendida: 'Atendida', no_asistio: 'No asistió', cancelada: 'Cancelada' };
-const APPT_BADGE = { pendiente: 'b-pendiente_pago', confirmada: 'b-emitido', atendida: 'b-vencido', no_asistio: 'b-cancelado', cancelada: 'b-cancelado' };
-const REM = { vence: ['⏰', 'Vence pronto'], saldo: ['$', 'Saldo pendiente'], anticipo: ['!', 'Vencida con anticipo'], revision: ['!', 'Pago en revisión'], cita: ['📅', 'Cita por confirmar'], correccion: ['✎', 'Correcciones'] };
-let agDate = null, agData = null;
-async function refreshAgCount() {
-  const r = await api('/api/staff/agenda');
-  const n = r.reminders.length + r.tasks.filter((t) => !t.done).length;
-  $('#ag-count').textContent = n; $('#ag-count').classList.toggle('hidden', !n);
-}
-$('#ag-prev').onclick = () => { agDate = addDays(agDate, -1); loadAgenda(); };
-$('#ag-next').onclick = () => { agDate = addDays(agDate, 1); loadAgenda(); };
-$('#ag-today').onclick = () => { agDate = cfg.today; loadAgenda(); };
-$('#ag-date').onchange = () => { if ($('#ag-date').value) { agDate = $('#ag-date').value; loadAgenda(); } };
-async function loadAgenda() {
-  agDate = agDate || cfg.today;
-  const r = agData = await api('/api/staff/agenda?date=' + agDate);
-  $('#ag-date').value = agDate;
-  $('#ag-title').textContent = cap(dLong(agDate)) + (agDate === cfg.today ? ' · hoy' : '');
-  const free = r.slots.reduce((t, s) => t + s.left, 0);
-  const close = r.open ? (() => { const [h, m] = r.slots.at(-1).time.split(':').map(Number); const t = h * 60 + m + 30; return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; })() : '';
-  $('#ag-slots').textContent = r.open ? `Horario de ${r.slots[0].time} a ${close} · ${free} lugar${free === 1 ? '' : 'es'} libre${free === 1 ? '' : 's'} para citas.` : 'La agencia no abre este día.';
-  $('#appt-list').innerHTML = r.appointments.length ? r.appointments.map((a) => `<div class="appt ${a.status}" data-id="${a.id}">
-      <div class="appt-t">${esc(a.time)}</div>
-      <div class="appt-b"><div><b>${esc(a.name)}</b> · <a href="tel:${esc(a.phone)}">${esc(a.phone)}</a>${a.email ? ' · ' + esc(a.email) : ''} <span class="badge ${APPT_BADGE[a.status]}">${esc(a.status_label)}</span></div>
-        <div class="small-txt">${esc(a.reason_label)}${a.booking_code ? ` · Reserva <button type="button" class="linkbtn" data-code="${esc(a.booking_code)}"><b>${esc(a.booking_code)}</b></button>` : ''} · <span class="muted">Folio ${esc(a.code)} · ${a.origin === 'web' ? 'agendada en línea' : 'agendada en agencia'}</span></div>
-        ${a.notes ? `<div class="small-txt muted">“${esc(a.notes)}”</div>` : ''}
-        ${['pendiente', 'confirmada'].includes(a.status) ? `<div class="appt-act">
-          ${a.status === 'pendiente' ? '<button class="small accent" data-st="confirmada">Confirmar</button>' : ''}
-          <button class="small secondary" data-st="atendida">Atendida</button><button class="small secondary" data-st="no_asistio">No asistió</button>
-          <button class="small secondary" data-mv>Reprogramar</button><button class="small danger" data-st="cancelada">Cancelar</button></div>` : ''}</div></div>`).join('')
-    : `<div class="empty" style="padding:18px">Sin citas este día.</div>`;
-  $$('#appt-list .appt').forEach((el) => {
-    const a = r.appointments.find((x) => String(x.id) === el.dataset.id);
-    $$('[data-st]', el).forEach((b) => b.onclick = async () => {
-      if (b.dataset.st === 'cancelada' && !confirm(`¿Cancelar la cita de ${a.name}?`)) return;
-      try { await api('/api/staff/appointments/' + a.id, { method: 'PUT', body: { status: b.dataset.st } }); loadAgenda(); refreshAgCount(); } catch (e) { alert(e.message); }
-    });
-    if ($('[data-mv]', el)) $('[data-mv]', el).onclick = () => apptForm(a);
-  });
-  $$('#appt-list [data-code]').forEach((x) => x.onclick = async (e) => { e.preventDefault(); try { openBooking((await api('/api/staff/booking-by-code/' + x.dataset.code)).id); } catch (ex) { alert(ex.message); } });
-  // tareas
-  $('#ta').innerHTML = '<option value="">Cualquiera</option>' + r.users.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
-  $('#task-list').innerHTML = r.tasks.length ? r.tasks.map((t) => `<div class="task ${t.done ? 'done' : ''} ${t.overdue ? 'late' : ''}" data-id="${t.id}">
-      <label class="check"><input type="checkbox" ${t.done ? 'checked' : ''}> <span><b>${esc(t.title)}</b>
-        <span class="small-txt muted">${t.overdue ? `<b style="color:var(--danger)">Atrasada (${esc(dDate(t.due_date))})</b> · ` : ''}${t.due_time ? esc(t.due_time) + ' · ' : ''}${t.booking_code ? `Reserva <button type="button" class="linkbtn" data-code="${esc(t.booking_code)}">${esc(t.booking_code)}</button> · ` : ''}${t.assigned_name ? 'Para ' + esc(t.assigned_name) : 'Para cualquiera'}${t.done ? ' · Hecha por ' + esc(t.done_by || '') : ''}</span></span></label>
-      <button class="ghost small" data-del aria-label="Borrar tarea">${icon('x', 'ico-sm')}</button></div>`).join('')
-    : '<p class="muted small-txt">No hay tareas para este día.</p>';
-  $$('#task-list .task').forEach((el) => {
-    $('input', el).onchange = async (e) => { await api('/api/staff/tasks/' + el.dataset.id, { method: 'PUT', body: { done: e.target.checked } }); loadAgenda(); refreshAgCount(); };
-    $('[data-del]', el).onclick = async () => { if (!confirm('¿Borrar esta tarea?')) return; await api('/api/staff/tasks/' + el.dataset.id, { method: 'DELETE' }); loadAgenda(); refreshAgCount(); };
-  });
-  $$('#task-list [data-code]').forEach((x) => x.onclick = async (e) => { e.preventDefault(); try { openBooking((await api('/api/staff/booking-by-code/' + x.dataset.code)).id); } catch (ex) { alert(ex.message); } });
-  // pendientes automáticos
-  $('#rem-list').innerHTML = r.reminders.length ? r.reminders.map((x, i) => `<div class="rem rem-${x.kind}">
-      <span class="rem-i">${REM[x.kind][0]}</span>
-      <div><div class="small-txt"><b>${REM[x.kind][1]}</b>${x.code ? ` · <button type="button" class="linkbtn" data-open="${x.booking_id}"><b>${esc(x.code)}</b></button>` : ''}${x.at ? ` · ${dt(x.at)}` : ''}</div>
-        <div class="small-txt">${esc(x.text)}</div>
-        <div class="rem-act">${x.kind === 'cita' ? `<button class="ghost small" data-day="${x.date}">Ver día</button>` : ''}${x.kind === 'correccion' ? '<button class="ghost small" data-corr>Revisar</button>' : ''}
-          ${x.code ? `<button class="ghost small" data-task="${i}">+ Tarea para hoy</button>` : ''}</div></div></div>`).join('')
-    : '<div class="empty" style="padding:18px">Todo al día ✓</div>';
-  $$('#rem-list [data-open]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openBooking(a.dataset.open); });
-  $$('#rem-list [data-day]').forEach((b) => b.onclick = () => { agDate = b.dataset.day; loadAgenda(); });
-  $$('#rem-list [data-corr]').forEach((b) => b.onclick = () => goTab('corrections'));
-  $$('#rem-list [data-task]').forEach((b) => b.onclick = async () => {
-    const x = r.reminders[Number(b.dataset.task)];
-    const title = { vence: 'Llamar: reserva por vencer sin pago', saldo: 'Llamar: recordar saldo pendiente', anticipo: 'Resolver reserva vencida con anticipo', revision: 'Revisar pago en línea' }[x.kind] || 'Dar seguimiento';
-    try { await api('/api/staff/tasks', { method: 'POST', body: { title, due_date: cfg.today, booking_code: x.code } }); showMsg($('#task-msg'), 'Tarea agregada para hoy.', 'ok'); agDate = cfg.today; loadAgenda(); refreshAgCount(); }
-    catch (e) { alert(e.message); }
-  });
-}
-$('#task-f').addEventListener('submit', async (e) => {
-  e.preventDefault(); hideMsg($('#task-msg'));
-  try {
-    await api('/api/staff/tasks', { method: 'POST', body: { title: $('#tt').value, due_date: agDate, due_time: $('#th').value, booking_code: $('#tc').value.trim(), assigned_to: $('#ta').value } });
-    $('#tt').value = ''; $('#th').value = ''; $('#tc').value = '';
-    loadAgenda(); refreshAgCount();
-  } catch (ex) { showMsg($('#task-msg'), ex.message); }
-});
-$('#appt-new').onclick = () => apptForm(null);
-// Nueva cita (a = null) o reprogramar una existente.
-function apptForm(a) {
-  const isNew = !a;
-  const reasons = agData.reasons;
-  $('#mb').innerHTML = `<div class="modal-head"><h2 style="margin:0">${isNew ? 'Nueva cita' : 'Reprogramar cita de ' + esc(a.name)}</h2><button class="secondary small" id="mclose">Cerrar</button></div>
-    <form id="af">
-      ${isNew ? `<label>Motivo</label><select id="a-r">${Object.entries(reasons).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>` : ''}
-      <div class="row"><div><label>Día</label><input id="a-d" type="date" min="${cfg.today}" value="${esc(isNew ? (agDate < cfg.today ? cfg.today : agDate) : a.date)}"></div>
-        <div><label>Hora</label><select id="a-t"></select></div></div>
-      ${isNew ? `<div class="row3"><div><label>Nombre</label><input id="a-n"></div><div><label>Teléfono</label><input id="a-p" type="tel"></div><div><label>Correo (opcional)</label><input id="a-e" type="email"></div></div>
-      <div class="row"><div><label>Código de reserva (opcional)</label><input id="a-c" maxlength="6" style="text-transform:uppercase"></div><div><label>Notas</label><input id="a-o" maxlength="400"></div></div>` : ''}
-      <div class="alert error hidden" id="aerr"></div>
-      <button class="block" type="submit" style="margin-top:14px">${isNew ? 'Agendar (queda confirmada)' : 'Guardar nuevo horario'}</button>
-    </form>`;
-  $('#modal').classList.remove('hidden'); $('#mclose').onclick = closeModal;
-  const fillSlots = async () => {
-    const s = await api('/api/appointments/slots?date=' + $('#a-d').value);
-    $('#a-t').innerHTML = s.open ? s.slots.map((x) => `<option value="${x.time}" ${x.left < 1 && !(a && a.date === $('#a-d').value && a.time === x.time) ? 'disabled' : ''}>${x.time}${x.left < 1 ? ' (lleno)' : ` · ${x.left} libre${x.left > 1 ? 's' : ''}`}</option>`).join('') : '<option value="">Cerrado</option>';
-    const firstFree = $$('#a-t option').find((o) => !o.disabled && o.value);
-    if (a && a.date === $('#a-d').value) $('#a-t').value = a.time; else if (firstFree) $('#a-t').value = firstFree.value;
-  };
-  $('#a-d').onchange = fillSlots; fillSlots();
-  $('#af').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try {
-      if (isNew) await api('/api/staff/appointments', { method: 'POST', body: { reason: $('#a-r').value, date: $('#a-d').value, time: $('#a-t').value, name: $('#a-n').value, phone: $('#a-p').value, email: $('#a-e').value, booking_code: $('#a-c').value.trim(), notes: $('#a-o').value } });
-      else await api('/api/staff/appointments/' + a.id, { method: 'PUT', body: { status: a.status, date: $('#a-d').value, time: $('#a-t').value } });
-      closeModal(); agDate = $('#a-d').value; loadAgenda(); refreshAgCount();
-    } catch (ex) { showMsg($('#aerr'), ex.message); }
-  });
 }
 
 // ----- correcciones -----
@@ -451,12 +332,12 @@ async function loadSettings() {
   const s = (await getCat()).settings;
   $('#s-tax').value = Math.round(s.tax_rate * 1000) / 10; $('#s-fee').value = s.service_fee; $('#s-hold').value = s.hold_hours;
   $('#s-std').value = s.seat_std; $('#s-front').value = s.seat_front; $('#s-exit').value = s.seat_exit;
-  $('#s-dep').value = Math.round(s.deposit_pct * 100); $('#s-fpd').value = s.full_pay_days; $('#s-cap').value = s.appt_capacity;
+  $('#s-dep').value = Math.round(s.deposit_pct * 100); $('#s-fpd').value = s.full_pay_days;
 }
 $('#set-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   try { await api('/api/admin/settings', { method: 'PUT', body: { tax_rate: Number($('#s-tax').value) / 100, service_fee: Number($('#s-fee').value), hold_hours: Number($('#s-hold').value), seat_std: Number($('#s-std').value), seat_front: Number($('#s-front').value), seat_exit: Number($('#s-exit').value),
-    deposit_pct: Number($('#s-dep').value) / 100, full_pay_days: Number($('#s-fpd').value), appt_capacity: Number($('#s-cap').value) } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
+    deposit_pct: Number($('#s-dep').value) / 100, full_pay_days: Number($('#s-fpd').value) } }); showMsg($('#set-msg'), 'Guardado. Aplica a reservas nuevas.', 'ok'); }
   catch (ex) { showMsg($('#set-msg'), ex.message); }
 });
 

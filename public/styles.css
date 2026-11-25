@@ -346,34 +346,6 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 .day-list .t { font-weight: 800; color: var(--brand); margin-right: 4px; }
 @media (max-width: 760px) { .aday { min-height: 64px; padding: 4px; } .chips-s i { font-size: .62rem; padding: 1px 3px; } }
 
-/* agencia: agenda */
-.ag-nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 14px 18px; margin-bottom: 16px; }
-.ag-nav input { width: auto; }
-.ag-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .ag-grid { grid-template-columns: 1fr; } }
-.appt { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
-.appt:first-child { border-top: 0; }
-.appt-t { font-weight: 800; font-size: 1.05rem; color: var(--brand); }
-.appt-b > div { margin-bottom: 3px; }
-.appt.cancelada, .appt.no_asistio { opacity: .6; }
-.appt-act { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.task { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
-.task:first-child { border-top: 0; }
-.task .check { margin: 0; }
-.task .check > span { display: flex; flex-direction: column; gap: 2px; }
-.task.done b { text-decoration: line-through; color: var(--muted); }
-.task.late { background: linear-gradient(90deg, var(--danger-soft), transparent 60%); border-radius: 8px; padding-left: 6px; }
-.task-form { display: grid; grid-template-columns: minmax(0, 2fr) 110px 110px minmax(0, 1fr) auto; gap: 0 10px; align-items: end; margin-top: 10px; border-top: 1px dashed var(--line-2); padding-top: 4px; }
-@media (max-width: 760px) { .task-form { grid-template-columns: 1fr 1fr; } .task-form .tf-title { grid-column: 1 / -1; } .task-form > div:last-child { grid-column: 1 / -1; margin-top: 10px; } }
-.rem { display: grid; grid-template-columns: 30px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
-.rem:first-child { border-top: 0; }
-.rem-i { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-weight: 800; font-size: .9rem; background: var(--surface-2); }
-.rem-vence .rem-i, .rem-saldo .rem-i { background: var(--warn-soft); color: var(--warn); }
-.rem-anticipo .rem-i, .rem-revision .rem-i { background: var(--danger-soft); color: var(--danger); }
-.rem-cita .rem-i { background: #f1e8ff; color: #6b21a8; }
-.rem-act { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
-.rem-act button { padding: 4px 8px; }
-
 /* pagos */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
 .chip { font-size: .82rem; padding: 6px 10px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); }
@@ -390,13 +362,6 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 .pay-opts .check { margin: 0; align-items: center; }
 .pay-opts input[type=number] { width: 120px; padding: 6px 8px; display: inline-block; margin: 0 4px; }
 
-/* citas */
-.slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
-.slot { background: var(--surface); color: var(--ink); border: 1.5px solid var(--line-2); padding: 10px 6px; font-weight: 700; }
-.slot:hover:not(:disabled) { background: var(--brand-soft); border-color: var(--brand-2); }
-.slot.on { background: var(--brand); color: #fff; border-color: var(--brand-dark); }
-.slot:disabled { background: var(--surface-2); color: #b1b9c6; text-decoration: line-through; }
-.appt-ok .code { font-size: 2rem; font-weight: 800; letter-spacing: 3px; color: var(--brand); }
 @media (max-width: 560px) { .aday { min-height: 54px; } .chips-s { gap: 2px; } .chips-s i { font-size: 0; height: 5px; padding: 0; border-radius: 3px; } .c-dep { background: var(--brand-2); } .c-exp { background: #f59e0b; } .c-pay { background: #10b981; } .c-apt { background: #a855f7; } .c-task { background: #94a3b8; } .cal-legend i { font-size: .7rem; height: auto; padding: 2px 6px; } }
 
 /* botón con aspecto de enlace (en lugar de <a href="#">) */
